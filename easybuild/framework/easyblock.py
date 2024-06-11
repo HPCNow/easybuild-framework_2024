@@ -52,6 +52,8 @@ import stat
 import tempfile
 import time
 import traceback
+import requests
+import hashlib
 from datetime import datetime
 
 import easybuild.tools.environment as env
@@ -4835,3 +4837,180 @@ def inject_checksums(ecs, checksum_type):
             ectxt = regex.sub('\n'.join(exts_list_lines), ectxt)
 
         write_file(ec['spec'], ectxt)
+
+def complete_dependencies(ecs):
+     
+
+    def get_version_and_checksum(import_name):
+        """
+        Function that retrieves verion and checksum from Json data of the found dependecies
+        """
+        json_data = search_ext_cran(import_name)
+        version_in_cran = json_data.get('Version')
+        checksum_in_cran = json_data.get('MD5sum')
+
+        if checksum_in_cran is not None: 
+            checksum_in_cran = checksum_in_cran.strip()
+        else:
+            checksum_in_cran = calculate_md5(import_name,version_in_cran)
+        extension_data = (import_name,version_in_cran,{'checksums': [checksum_in_cran]})
+    
+        return extension_data
+
+    def search_ext_cran(extension_name):
+        """
+        Function that retrieves json data from CRAN database.
+        """
+        url = "http://crandb.r-pkg.org/"
+        r = requests.get(url + extension_name)
+        if r.status_code != 200:
+            return "not found"
+        else:
+            return r.json()
+
+    def calculate_md5(import_name,version_in_cran):
+        """
+        Function to get source file and calculate the checksum
+        """
+        
+        md5_hash = hashlib.md5()
+        url = "https://cran.r-project.org/src/contrib/"
+        r = requests.get(url + import_name +'_'+ version_in_cran + '.tar.gz',stream=True)
+
+        if r.status_code != 200:
+             print(import_name,'not Found')
+        else:
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:  
+                    md5_hash.update(chunk)
+
+        return md5_hash.hexdigest()
+    
+    def clean_imports(imports_of_extension):
+        """
+        Function that exclude the default R packages's 
+        """
+        imports_to_exclude = ['R', 'base', 'compiler', 'datasets', 'graphics',
+                        'grDevices', 'grid', 'methods', 'parallel',
+                        'splines', 'stats', 'stats4', 'tcltk', 'tools',
+                        'utils']
+        for import_name in imports_to_exclude:
+            if import_name in imports_of_extension:
+                del imports_of_extension[import_name]
+        return imports_of_extension
+
+
+
+    def get_imports(extensions_list):
+    
+        """
+        Function that retrieves a list of dependencies of each extension in the main .eb file
+        """
+    
+        extension_without_imports = []
+        extension_and_imports = {}
+    
+        for extension_name in extensions_list:
+            json_data = search_ext_cran(extension_name[0])
+            imports_of_extension = json_data.get('Imports')
+            if  imports_of_extension is not None:
+                    imports_of_extension = clean_imports(imports_of_extension)
+                    extension_and_imports[extension_name[0]] = list(imports_of_extension.keys())
+                    for import_name in  imports_of_extension.keys():
+                        if import_name not in [name[0] for name in extensions_list]:
+                            extensions_list.append(get_version_and_checksum(import_name))
+            else:
+                extension_without_imports.append(extension_name[0])
+        return extensions_list,extension_without_imports,extension_and_imports
+    
+    def sort_dependicies(extensions_list,start_sort,extension_and_imports):
+        for extension in extensions_list[start_sort:]:
+            before_imports = get_list_name_imports(extensions_list)
+            list_imports = extension_and_imports[extension[0]]
+            for import_name in list_imports:
+                if import_name not in before_imports[:before_imports.index(extension[0])]:
+                    extensions_list = move_extension(extension[0],extensions_list)
+
+        return extensions_list
+
+    def move_extension(extension_name,extension_list):
+        for index,name in enumerate(extension_list):
+            if name[0] == extension_name:
+                extension_list.append(extension_list.pop(index))
+        return extension_list
+
+    def  get_list_name_imports(before_imports):
+        list_of_names =[]
+        for import_name in before_imports:
+            list_of_names.append(import_name[0])
+        return list_of_names
+
+    def put_witout_imports_extensions_top(extension_without_imports, extensions_list):
+        """
+        Fuction that  put all depencies with only  import from the system to top of the list
+        """
+        for name in extension_without_imports:
+            for index, extesion_name in enumerate(extensions_list):
+                if extesion_name[0] == name:
+                    element_to_move = extensions_list.pop(index)
+                    extensions_list.insert(0,element_to_move)
+                    break
+        return extensions_list
+    
+    def format_string(input_string):
+        """
+        Function to format output of the tuple to match with the config  eb file
+        """
+
+        parts = input_string.split(", ", 2)
+        formatted_string = (
+            f"{parts[0]}, {parts[1]}, {{\n"
+            f"{parts[2].strip('}),')},\n"
+            f"}})"
+        )
+        return formatted_string
+
+
+
+    for ec in ecs:
+        ectxt = read_file(ec['spec'])
+        app = get_easyblock_instance(ec)
+        app.update_config_template_run_step()
+        app.update_config_template_run_step()
+        app.fetch_step(skip_checksums=True)
+        extensions = []       
+        for ext in app.exts:
+           extensions.append(get_version_and_checksum(ext.get('name'))) #uptate version and checksum of first extension
+
+
+        print_msg("Fetching tree of dependencies... ", log=_log)
+        extensions,extension_without_imports,extension_and_imports = get_imports(extensions)
+        
+        print_msg("Dependencies reorder to correct installation...", log=_log)
+
+        extensions = put_witout_imports_extensions_top(extension_without_imports,extensions)
+        start_sort = len(extension_without_imports)
+        old_list =  copy.deepcopy(extensions)
+        new_list = []
+        
+        
+    
+        while old_list != new_list:
+            old_list = copy.deepcopy(extensions)
+            extensions = sort_dependicies(extensions,start_sort,extension_and_imports)
+            new_list = copy.deepcopy(extensions)
+        
+        for item in new_list:
+            print(item)
+
+#exts_list_lines.append("%s'checksums': ['%s']," % (INDENT_4SPACES * 2, checksum))
+        
+        exts_list_lines = ['exts_list = [']
+        for item in new_list:
+          exts_list_lines.append("%s%s" %(INDENT_4SPACES,format_string(str(item))))
+          
+        exts_list_lines.append(']\n')
+        regex = re.compile(r'^exts_list(.|\n)*?\n\]\s*$', re.M)
+        ectxt = regex.sub('\n'.join(exts_list_lines), ectxt)
+        print('-------------------------------------------------------------')
+        print(ectxt)

@@ -10,7 +10,7 @@ dist/
 *egg-info/
 *.swp
 .mypy_cache/
-
+2
 Dockerfile.*
 Singularity.*
 test-reports/
