@@ -4957,21 +4957,6 @@ def complete_dependencies(ecs):
                     break
         return extensions_list
     
-    def format_string(input_string):
-        """
-        Function to format output of the tuple to match with the config  eb file
-        """
-
-        parts = input_string.split(", ", 2)
-        formatted_string = (
-            f"{parts[0]}, {parts[1]}, {{\n"
-            f"{parts[2].strip('}),')},\n"
-            f"}})"
-        )
-        return formatted_string
-
-
-
     for ec in ecs:
         ectxt = read_file(ec['spec'])
         app = get_easyblock_instance(ec)
@@ -4980,7 +4965,8 @@ def complete_dependencies(ecs):
         app.fetch_step(skip_checksums=True)
         extensions = []       
         for ext in app.exts:
-           extensions.append(get_version_and_checksum(ext.get('name'))) #uptate version and checksum of first extension
+           #Uptate version and checksum of first extension in the config file 
+           extensions.append(get_version_and_checksum(ext.get('name'))) 
 
 
         print_msg("Fetching tree of dependencies... ", log=_log)
@@ -4994,23 +4980,28 @@ def complete_dependencies(ecs):
         new_list = []
         
         
-    
+        #update list with new order by dependencies
         while old_list != new_list:
             old_list = copy.deepcopy(extensions)
             extensions = sort_dependicies(extensions,start_sort,extension_and_imports)
             new_list = copy.deepcopy(extensions)
         
-        for item in new_list:
-            print(item)
-
-#exts_list_lines.append("%s'checksums': ['%s']," % (INDENT_4SPACES * 2, checksum))
+        # back up easyconfig file before injecting checksums
+        ec_backup = back_up_file(ec['spec'])
+        print_msg("backup of easyconfig file saved to %s..." % ec_backup, log=_log)
+        
         
         exts_list_lines = ['exts_list = [']
-        for item in new_list:
-          exts_list_lines.append("%s%s" %(INDENT_4SPACES,format_string(str(item))))
-          
+
+        for item in  new_list:
+            item = str(item)
+            parts = re.split('{|}', item)  
+            exts_list_lines.append('%s%s{' %  (INDENT_4SPACES,parts[0],))
+            exts_list_lines.append('%s%s,' %  (INDENT_4SPACES * 2,parts[1],))
+            exts_list_lines.append('%s}),' %  (INDENT_4SPACES,))
+            
         exts_list_lines.append(']\n')
         regex = re.compile(r'^exts_list(.|\n)*?\n\]\s*$', re.M)
         ectxt = regex.sub('\n'.join(exts_list_lines), ectxt)
-        print('-------------------------------------------------------------')
-        print(ectxt)
+    
+    write_file(ec['spec'], ectxt)
