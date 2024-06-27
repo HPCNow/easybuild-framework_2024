@@ -4843,7 +4843,7 @@ def complete_dependencies(ecs):
 
     def get_version_and_checksum(import_name):
         """
-        Function that retrieves verion and checksum from Json data of the found dependecies
+        Function that retrieves version and checksum from Json data of the found dependecies
         """
         json_data = search_ext_cran(import_name)
         version_in_cran = json_data.get('Version')
@@ -4914,9 +4914,12 @@ def complete_dependencies(ecs):
             json_data = search_ext_cran(extension_name[0])
             imports_of_extension = json_data.get('Imports')
             if  imports_of_extension is not None:
+                    #clean imports of default  R packages to avoid cycle dependencies
                     imports_of_extension = clean_imports(imports_of_extension)
+                    #create a dictionary to link the extensions with his imports
                     extension_and_imports[extension_name[0]] = list(imports_of_extension.keys())
                     for import_name in  imports_of_extension.keys():
+                        #check that the imports do not exist as extensions in the main list of extensions
                         if import_name not in [name[0] for name in extensions_list]:
                             extensions_list.append(get_version_and_checksum(import_name))
             else:
@@ -4924,30 +4927,38 @@ def complete_dependencies(ecs):
         return extensions_list,extension_without_imports,extension_and_imports
     
     def sort_dependicies(extensions_list,start_sort,extension_and_imports):
+        #start the reorder excluding the extension without dependencies
         for extension in extensions_list[start_sort:]:
-            before_imports = get_list_name_imports(extensions_list)
+            name_imports = get_name_imports(extensions_list)
             list_imports = extension_and_imports[extension[0]]
-            for import_name in list_imports:
-                if import_name not in before_imports[:before_imports.index(extension[0])]:
-                    extensions_list = move_extension(extension[0],extensions_list)
+            for name in list_imports:
+                #check that the import that is dependent on the extension is above the extension
+                if name not in name_imports[:name_imports.index(extension[0])]:
+                    extensions_list = move_to_end(extension[0],extensions_list)
 
         return extensions_list
 
-    def move_extension(extension_name,extension_list):
+    def move_to_end(extension_name,extension_list):
+        """
+        Fuction that move the extension to the end  the list
+        """
         for index,name in enumerate(extension_list):
             if name[0] == extension_name:
                 extension_list.append(extension_list.pop(index))
         return extension_list
 
-    def  get_list_name_imports(before_imports):
+    def get_name_imports(name_imports):
+        """ 
+        Function only get name of the imports
+        """
         list_of_names =[]
-        for import_name in before_imports:
+        for import_name in name_imports:
             list_of_names.append(import_name[0])
         return list_of_names
 
     def put_witout_imports_extensions_top(extension_without_imports, extensions_list):
         """
-        Fuction that  put all depencies with only  import from the system to top of the list
+        Function that puts all dependencies with only imports from the system to the top of the lis
         """
         for name in extension_without_imports:
             for index, extesion_name in enumerate(extensions_list):
@@ -4965,14 +4976,15 @@ def complete_dependencies(ecs):
         app.fetch_step(skip_checksums=True)
         extensions = []       
         for ext in app.exts:
-           #Uptate version and checksum of first extension in the config file 
+           #Uptate version and checksum of the first extension in the config file 
            extensions.append(get_version_and_checksum(ext.get('name'))) 
 
 
         print_msg("Fetching tree of dependencies... ", log=_log)
+        #get all imports with his version and checksum 
         extensions,extension_without_imports,extension_and_imports = get_imports(extensions)
         
-        print_msg("Dependencies reorder to correct installation...", log=_log)
+        print_msg("Reorder extension for correct installation...", log=_log)
 
         extensions = put_witout_imports_extensions_top(extension_without_imports,extensions)
         start_sort = len(extension_without_imports)
@@ -4991,6 +5003,7 @@ def complete_dependencies(ecs):
         print_msg("backup of easyconfig file saved to %s..." % ec_backup, log=_log)
         
         
+        # rewrite file with right order of extensions.
         exts_list_lines = ['exts_list = [']
 
         for item in  new_list:
