@@ -5043,6 +5043,8 @@ def complete_dependencies(ecs):
 
             # If item is dictionary it means it was on the original extensions list.
             # Get those values back as it has been formatted by easyblock parser
+
+            # TODO:vmachado: We are taking the original extension from the list. Shall we update the version and checksum using CRAN information?
             if type(ext) is dict:
                 item_found = False
                 for exts_list_item in exts_list:
@@ -5126,7 +5128,7 @@ def complete_dependencies(ecs):
         # TODO:vmachado: As I don't know how we will work with python and perl, I've implemented generic functions that then will call the correct Python/Perl/R functions.
         # After python or perl installation we will see if this is the best approach.
 
-        
+
         ext_type = get_ext_type(ec)
 
         # Get all extensions' imports
