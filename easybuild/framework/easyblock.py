@@ -4838,183 +4838,330 @@ def inject_checksums(ecs, checksum_type):
 
         write_file(ec['spec'], ectxt)
 
-def complete_dependencies(ecs):
-     
 
-    def get_version_and_checksum(import_name):
+def complete_dependencies(ecs):
+    """
+    Complete the extension's dependencies of the given EasyConfig instances
+
+    :param ecs: list of EasyConfig instances to complete dependencies for
+    """
+
+    #
+    # COMPLETE_DEPENDENCIES FUNCTIONS
+    #
+
+    def get_extension_info(ext_name):
         """
-        Function that retrieves version and checksum from Json data of the found dependecies
+        Get name, version, and checksum of given extension
+
+        :param extension: name of the extension to get info for
         """
-        json_data = search_ext_cran(import_name)
+
+        json_data = get_ext_cran_info(ext_name)
         version_in_cran = json_data.get('Version')
         checksum_in_cran = json_data.get('MD5sum')
 
-        if checksum_in_cran is not None: 
-            checksum_in_cran = checksum_in_cran.strip()
+        if checksum_in_cran is not None:
+            checksums = checksum_in_cran.strip()
         else:
-            checksum_in_cran = calculate_md5(import_name,version_in_cran)
-        extension_data = (import_name,version_in_cran,{'checksums': [checksum_in_cran]})
-    
-        return extension_data
+            checksums = calculate_md5(ext_name, version_in_cran)
 
-    def search_ext_cran(extension_name):
+        extension_info = (ext_name, version_in_cran, {'checksums': [checksums]})
+
+        return extension_info
+
+    def get_ext_cran_info(ext_name):
         """
-        Function that retrieves json data from CRAN database.
+        Get json data from CRAN database.
+
+        :param ext_name: name of extension to search for
         """
-        url = "http://crandb.r-pkg.org/"
-        r = requests.get(url + extension_name)
+
+        r = requests.get("http://crandb.r-pkg.org/" + ext_name)
+
         if r.status_code != 200:
-            return "not found"
+            print_warning("Extension %s not found in CRAN database" % ext_name)
+            return None
         else:
             return r.json()
 
-    def calculate_md5(import_name,version_in_cran):
+    def calculate_md5(import_name, version):
         """
         Function to get source file and calculate the checksum
         """
-        
+
         md5_hash = hashlib.md5()
         url = "https://cran.r-project.org/src/contrib/"
-        r = requests.get(url + import_name +'_'+ version_in_cran + '.tar.gz',stream=True)
+        r = requests.get(url + import_name + '_' + version + '.tar.gz', stream=True)
 
         if r.status_code != 200:
-             print(import_name,'not Found')
+            print_msg(import_name, 'not Found')
         else:
             for chunk in r.iter_content(chunk_size=8192):
-                if chunk:  
+                if chunk:
                     md5_hash.update(chunk)
 
         return md5_hash.hexdigest()
-    
-    def clean_imports(imports_of_extension):
-        """
-        Function that exclude the default R packages's 
-        """
-        imports_to_exclude = ['R', 'base', 'compiler', 'datasets', 'graphics',
-                        'grDevices', 'grid', 'methods', 'parallel',
-                        'splines', 'stats', 'stats4', 'tcltk', 'tools',
-                        'utils']
-        for import_name in imports_to_exclude:
-            if import_name in imports_of_extension:
-                del imports_of_extension[import_name]
-        return imports_of_extension
 
+    def _get_r_imports(ext_name):
+        """
+        Get all imports of a given R extension
 
+        :param ext: extension to get imports from
+        """
 
-    def get_imports(extensions_list):
-    
-        """
-        Function that retrieves a list of dependencies of each extension in the main .eb file
-        """
-    
-        extension_without_imports = []
-        extension_and_imports = {}
-    
-        for extension_name in extensions_list:
-            json_data = search_ext_cran(extension_name[0])
-            imports_of_extension = json_data.get('Imports')
-            if  imports_of_extension is not None:
-                    #clean imports of default  R packages to avoid cycle dependencies
-                    imports_of_extension = clean_imports(imports_of_extension)
-                    #create a dictionary to link the extensions with his imports
-                    extension_and_imports[extension_name[0]] = list(imports_of_extension.keys())
-                    for import_name in  imports_of_extension.keys():
-                        #check that the imports do not exist as extensions in the main list of extensions
-                        if import_name not in [name[0] for name in extensions_list]:
-                            extensions_list.append(get_version_and_checksum(import_name))
-            else:
-                extension_without_imports.append(extension_name[0])
-        return extensions_list,extension_without_imports,extension_and_imports
-    
-    def sort_dependicies(extensions_list,start_sort,extension_and_imports):
-        #start the reorder excluding the extension without dependencies
-        for extension in extensions_list[start_sort:]:
-            name_imports = get_name_imports(extensions_list)
-            list_imports = extension_and_imports[extension[0]]
-            for name in list_imports:
-                #check that the import that is dependent on the extension is above the extension
-                if name not in name_imports[:name_imports.index(extension[0])]:
-                    extensions_list = move_to_end(extension[0],extensions_list)
+        ext_imports_formated = []
 
-        return extensions_list
+        # Get extension information from CRAN
+        ext_cran_info = get_ext_cran_info(ext_name)
 
-    def move_to_end(extension_name,extension_list):
-        """
-        Fuction that move the extension to the end  the list
-        """
-        for index,name in enumerate(extension_list):
-            if name[0] == extension_name:
-                extension_list.append(extension_list.pop(index))
-        return extension_list
+        # Parse, clean, and format the imports
+        if ext_cran_info is not None:
 
-    def get_name_imports(name_imports):
-        """ 
-        Function only get name of the imports
-        """
-        list_of_names =[]
-        for import_name in name_imports:
-            list_of_names.append(import_name[0])
-        return list_of_names
+            # Get the imports from the CRAN information
+            ext_imports = ext_cran_info.get('Imports')
 
-    def put_witout_imports_extensions_top(extension_without_imports, extensions_list):
+            if ext_imports is not None:
+
+                # TODO:vmachado: Is this really needed? Where do we get these from? Do we need to extend this list?
+                imports_to_exclude = {'R', 'base', 'compiler', 'datasets', 'graphics',
+                                      'grDevices', 'grid', 'methods', 'parallel',
+                                      'splines', 'stats', 'stats4', 'tcltk', 'tools',
+                                      'utils'}
+
+                # Clean imports of default R packages to avoid cycle dependencies or retrieve the extension info from CRAN
+                for import_name in list(ext_imports.keys()):
+                    if import_name in imports_to_exclude:
+                        ext_imports.pop(import_name)
+                    else:
+
+                        ext_imports_formated.append(get_extension_info(import_name))
+                        # TODO:vmachado: should we check for the versions match between the extension and the import?
+
+        return ext_imports_formated
+
+    def get_imports(ext, ext_type):
         """
-        Function that puts all dependencies with only imports from the system to the top of the lis
+        Get all imports of a given extension
+
+        :param extension: extension to get imports from
+        :param ext_type: type of the extension. Options: python, perl, r
         """
-        for name in extension_without_imports:
-            for index, extesion_name in enumerate(extensions_list):
-                if extesion_name[0] == name:
-                    element_to_move = extensions_list.pop(index)
-                    extensions_list.insert(0,element_to_move)
+
+        if ext_type == 'python':
+            # TODO:vmachado: pending to implement
+            raise EasyBuildError("get_import for 'python' extension is pending implement")
+        elif ext_type == 'perl':
+            # TODO:vmachado: pending to implement
+            raise EasyBuildError("get_import for 'perl' extension is pending implement")
+        elif ext_type == 'r':
+            return _get_r_imports(ext_name=ext.get('name'))
+        else:
+            raise EasyBuildError("Unknown extension type: %s" % ext_type)
+
+    def _sort_r_dependencies(ext_with_imports):
+        """
+        Order the R extensions based on their dependencies, assuming there are no circular dependencies.
+
+        :param ext_with_imports: extensions and imports to sort
+        """
+        # Format example of ext_with_imports R object
+        #    [{'name': 'credentials', 'version': '2.3.0', 'options': {...}, 'imports': [('openssl', '2.2.0'), ('sys', '3.4.2'), ...]}, ...]
+
+        # Algorithm explanation:
+        # We will iterate over all ext_with_imports elements. For each element, we will check if it is a dependency of the already sorted extensions.
+        # If it is, we will insert on top of the first dependency.
+        # If it is not, we will insert at the end of the list. We will repeat this process until all elements are sorted.
+        # No circular dependencies is assumed.
+
+        ext_with_imports_sorted = []
+
+        for ext in ext_with_imports:
+            # Variable to check if already inserted due to dependency constrain
+            is_dependency = False
+
+            # Iterate over the already sorted extensions
+            for index, ext_sorted in enumerate(ext_with_imports_sorted):
+
+                # Check if the extension is a dependency of the already sorted extensions
+                if ext['name'] in [ext_name for ext_name, _, _ in ext_sorted['imports']]:
+
+                    # Insert the extension on top of the first dependency
+                    ext_with_imports_sorted.insert(index, ext)
+
+                    # Mark the extension as already inserted
+                    is_dependency = True
+
                     break
-        return extensions_list
-    
+
+            # If the extension is not a dependency of the already sorted extensions, insert at the end of the list
+            if not is_dependency:
+                ext_with_imports_sorted.append(ext)
+
+        return ext_with_imports_sorted
+
+    def sort_dependencies(ext_with_imports, ext_type):
+        """
+        Order the extensions based on their dependencies, assuming there are no circular dependencies.
+
+        :param ext_with_imports: extensions and imports to sort
+        :param ext_type: type of the extension. Options: python, perl, r
+        """
+
+        if ext_type == 'python':
+            # TODO:vmachado: pending to implement
+            raise EasyBuildError("sort_dependencies for 'python' extension is pending implement")
+        elif ext_type == 'perl':
+            # TODO:vmachado: pending to implement
+            raise EasyBuildError("sort_dependencies for 'perl' extension is pending implement")
+        elif ext_type == 'r':
+            return _sort_r_dependencies(ext_with_imports)
+        else:
+            raise EasyBuildError("Unknown extension type: %s" % ext_type)
+
+    def _format_r_dependencies(exts_list, exts_sorted):
+        """
+        Format the R extensions
+
+        :param exts_sorted: R extensions and imports to be formated
+        """
+
+        # Format example of R dependency object
+        #    [{'name': 'credentials', 'version': '2.3.0', 'options': {...}, 'imports': [('openssl', '2.2.0'), ('sys', '3.4.2'), ...]}, ...]
+
+        # Expand the imports on top of their extension
+        exts_expanded = []
+        for ext in exts_sorted:
+            exts_expanded.extend(ext['imports'])
+            exts_expanded.append(ext)
+
+        # Delete duplicates
+        seen = {}  # Use dictionary to keep track of seen items
+        ext_clean = []
+
+        for ext in exts_expanded:
+
+            # If item is dictionary it means it was on the original extensions list.
+            # Get those values back as it has been formatted by easyblock parser
+            if type(ext) is dict:
+                item_found = False
+                for exts_list_item in exts_list:
+                    if ext['name'] == exts_list_item[0]:
+                        ext = exts_list_item
+                        item_found = True
+                        break
+                if not item_found:
+                    raise EasyBuildError("Extension not found in original list: %s" % ext['name'])
+
+            if ext[0] not in seen:
+                ext_clean.append(ext)
+                seen[ext[0]] = True
+
+        return ext_clean
+
+    def format_dependencies(exts_list, exts_sorted, ext_type):
+        """
+        Format the extensions based on their type
+
+        :param exts_sorted: extensions and imports to be formated
+        :param ext_type: type of the extension. Options: python, perl, r
+        """
+
+        if ext_type == 'python':
+            # TODO:vmachado: pending to implement
+            raise EasyBuildError("sort_dependencies for 'python' extension is pending implement")
+        elif ext_type == 'perl':
+            # TODO:vmachado: pending to implement
+            raise EasyBuildError("sort_dependencies for 'perl' extension is pending implement")
+        elif ext_type == 'r':
+            return _format_r_dependencies(exts_list, exts_sorted)
+        else:
+            raise EasyBuildError("Unknown extension type: %s" % ext_type)
+
+    def get_ext_type(ec):
+        """
+        Get the type of the extension
+
+        :param ec: EasyConfig instance to get the type from
+        """
+
+        type = None
+
+        ext_default_class = ec['ec']['exts_defaultclass']
+
+        if ext_default_class:
+
+            if ext_default_class == 'PythonPackage':
+                type = 'python'
+            elif ext_default_class == 'RPackage':
+                type = 'r'
+            elif ext_default_class == 'PerlModule':
+                type = 'perl'
+            else:
+                raise EasyBuildError(
+                    "Complete dependencies only supports Python, Perl and R EasyConfigs. Found exts_defaultclass: %s" % ext_default_class)
+        else:
+            # TODO:vmachado: In case there is no exts_defaultclass, we should check the type of the extension by other means.
+            raise EasyBuildError("No exts_defaultclass found in EasyConfig")
+
+        return type
+
+    #
+    # COMPLETE_DEPENDENCIES CODE
+    #
+
     for ec in ecs:
+        # TODO:vmachado: Could we work directly with "ec['ec']['exts_list']" instead of "Completing dependencies..." & "Fetching sources..."?
+        # Do we need to use the EasyBlock instance instead of working directly with the ec value?
+        print_msg("Completing dependencies in %s" % (ec['spec']), log=_log)
+        ec_fn = os.path.basename(ec['spec'])
         ectxt = read_file(ec['spec'])
-        app = get_easyblock_instance(ec)
-        app.update_config_template_run_step()
+
+        print_msg("Fetching sources & patches for %s..." % ec_fn, log=_log)
+        app: EasyBlock = get_easyblock_instance(ec)
         app.update_config_template_run_step()
         app.fetch_step(skip_checksums=True)
-        extensions = []       
+
+        # Get the type of the extension: python, perl, r
+        # TODO:vmachado: As I don't know how we will work with python and perl, I've implemented generic functions that then will call the correct Python/Perl/R functions.
+        # After python or perl installation we will see if this is the best approach.
+
+        
+        ext_type = get_ext_type(ec)
+
+        # Get all extensions' imports
+        exts_with_imports = []
         for ext in app.exts:
-           #Uptate version and checksum of the first extension in the config file 
-           extensions.append(get_version_and_checksum(ext.get('name'))) 
+            ext['imports'] = get_imports(ext, ext_type)
+            exts_with_imports.append(ext)
 
+        # Sort the extensions based on their dependencies
+        print_msg("Sorting extensions based on their dependencies...", log=_log)
+        exts_sorted = sort_dependencies(exts_with_imports, ext_type)
 
-        print_msg("Fetching tree of dependencies... ", log=_log)
-        #get all imports with his version and checksum 
-        extensions,extension_without_imports,extension_and_imports = get_imports(extensions)
-        
-        print_msg("Reorder extension for correct installation...", log=_log)
+        # Format the extension so it becomes a list of extensions with their imports on top of them
+        print_msg("Formatting dependencies...", log=_log)
+        exts_formated = format_dependencies(ec['ec']['exts_list'], exts_sorted, ext_type)
 
-        extensions = put_witout_imports_extensions_top(extension_without_imports,extensions)
-        start_sort = len(extension_without_imports)
-        old_list =  copy.deepcopy(extensions)
-        new_list = []
-        
-        
-        #update list with new order by dependencies
-        while old_list != new_list:
-            old_list = copy.deepcopy(extensions)
-            extensions = sort_dependicies(extensions,start_sort,extension_and_imports)
-            new_list = copy.deepcopy(extensions)
-        
-        # back up easyconfig file before injecting checksums
-        ec_backup = back_up_file(ec['spec'])
-        print_msg("backup of easyconfig file saved to %s..." % ec_backup, log=_log)
-        
-        
         # rewrite file with right order of extensions.
+        print_msg('Writing new "exts_list" item...', log=_log)
         exts_list_lines = ['exts_list = [']
 
-        for item in  new_list:
+        for item in exts_formated:
             item = str(item)
-            parts = re.split('{|}', item)  
-            exts_list_lines.append('%s%s{' %  (INDENT_4SPACES,parts[0],))
-            exts_list_lines.append('%s%s,' %  (INDENT_4SPACES * 2,parts[1],))
-            exts_list_lines.append('%s}),' %  (INDENT_4SPACES,))
-            
+            parts = re.split('{|}', item)
+            exts_list_lines.append('%s%s{' % (INDENT_4SPACES, parts[0],))
+            exts_list_lines.append('%s%s,' % (INDENT_4SPACES * 2, parts[1],))
+            exts_list_lines.append('%s}),' % (INDENT_4SPACES,))
+
         exts_list_lines.append(']\n')
+
         regex = re.compile(r'^exts_list(.|\n)*?\n\]\s*$', re.M)
         ectxt = regex.sub('\n'.join(exts_list_lines), ectxt)
-    
-    write_file(ec['spec'], ectxt)
+
+        # Back up easyconfig file before injecting checksums
+        ec_backup = back_up_file(ec['spec'])
+        print_msg('Backign up of easyconfig file at "%s" ...' % ec_backup, log=_log)
+
+        # Write the new easyconfig file
+        write_file(ec['spec'], ectxt)
