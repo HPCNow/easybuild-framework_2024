@@ -4974,6 +4974,9 @@ def complete_dependencies(ecs):
         # If it is not, we will insert at the end of the list. We will repeat this process until all elements are sorted.
         # No circular dependencies is assumed.
 
+        # TODO:vmachado: Shall we check for circular dependencies?
+        # TODO:vmachado: This algorithm could be improved to avoid multiple iterations over the list. We could use a dictionary to store the dependencies and their indexes.
+
         ext_with_imports_sorted = []
 
         for ext in ext_with_imports:
@@ -4984,7 +4987,7 @@ def complete_dependencies(ecs):
             for index, ext_sorted in enumerate(ext_with_imports_sorted):
 
                 # Check if the extension is a dependency of the already sorted extensions
-                if ext['name'] in [ext_name for ext_name, _, _ in ext_sorted['imports']]:
+                if ext['name'] in [ext_name for ext_name, *rest in ext_sorted.get('imports', [])]:
 
                     # Insert the extension on top of the first dependency
                     ext_with_imports_sorted.insert(index, ext)
@@ -5112,6 +5115,10 @@ def complete_dependencies(ecs):
     # COMPLETE_DEPENDENCIES CODE
     #
 
+    # TODO:vmachado: Delete this, it is just for testing
+    # _sort_r_dependencies([{'name': 'A', 'version': '2.3.0','imports': [('B', '2.2.0'), ('C', '3.4.2')]}, {'name': 'B', 'version': '2.3.0'}, {'name': 'C', 'version': '2.3.0','imports': [('B', '2.2.0')]}])
+
+
     for ec in ecs:
         # TODO:vmachado: Could we work directly with "ec['ec']['exts_list']" instead of "Completing dependencies..." & "Fetching sources..."?
         # Do we need to use the EasyBlock instance instead of working directly with the ec value?
@@ -5127,7 +5134,6 @@ def complete_dependencies(ecs):
         # Get the type of the extension: python, perl, r
         # TODO:vmachado: As I don't know how we will work with python and perl, I've implemented generic functions that then will call the correct Python/Perl/R functions.
         # After python or perl installation we will see if this is the best approach.
-
 
         ext_type = get_ext_type(ec)
 
