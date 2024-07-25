@@ -4850,78 +4850,211 @@ def complete_dependencies(ecs):
     # COMPLETE_DEPENDENCIES FUNCTIONS
     #
 
-    def get_extension_info(ext_name):
+    def format_package_as_extension(language, package):
         """
-        Get name, version, and checksum of given extension
+        Format package information as an extension
 
-        :param extension: name of the extension to get info for
+        :param language: language of the package ('python', 'perl', 'r')
+        :param package: package information to format
         """
+    
+        if language == 'r':
+            package_name = package.get('Package')
+            package_version = package.get('Version')
+            checksum = package.get('MD5sum')
 
-        json_data = get_ext_cran_info(ext_name)
-        version_in_cran = json_data.get('Version')
-        checksum_in_cran = json_data.get('MD5sum')
+            if not checksum:
+                checksum = calculate_md5(language, package_name, package_version)
 
-        if checksum_in_cran is not None:
-            checksums = checksum_in_cran.strip()
+            package_options = {'checksums': [checksum]}
+                                                                             
+        elif language == 'python':
+            raise EasyBuildError("Python not supported yet")
+        elif language == 'perl':
+            raise EasyBuildError("Perl not supported yet")
         else:
-            checksums = calculate_md5(ext_name, version_in_cran)
+            raise EasyBuildError("Language not supported: %s" % language)
 
-        extension_info = (ext_name, version_in_cran, {'checksums': [checksums]})
+        return (package_name, package_version, package_options)
 
-        return extension_info
-
-    def get_ext_cran_info(ext_name):
+    def get_package_url(language, package_name, package_version):
         """
-        Get json data from CRAN database.
+        Get the package url to be downloaded
 
-        :param ext_name: name of extension to search for
+        :param language: language of the package ('python', 'perl', 'r')
+        :param package_name: name of package to search for
+        :param package_version: version of package to search for
+        """
+        if not language:
+            raise EasyBuildError("get_package_url: Language not specified")
+
+        if not package_name:
+            raise EasyBuildError("get_package_url: Package name not specified")
+        
+        if not package_version:
+            raise EasyBuildError("get_package_url: Package version not specified")
+        
+        # Delete version symbols
+        if package_version:
+            for symbol in ['>', '<', '=', '!', '*', ' ']:
+                package_version = package_version.replace(symbol, '')
+
+        # TODO:vmachado: We should process the version parameter to get the correct version in '>', '<' and '!' cases
+
+        if language == 'r':
+            base_url = "https://cran.r-project.org/src/contrib/"
+            package_url = base_url + package_name + '_' + package_version + '.tar.gz'
+            
+            # Check if package is found in the CRAN database of latests releases
+            response = requests.head(package_url)
+            if response.status_code == 404:
+
+                # If not found, construct the URL for the Archive directory
+                package_url = f"{base_url}Archive/{package_name}/{package_name}_{package_version}.tar.gz"
+
+                # Check if package is found in the CRAN database of archived releases
+                response = requests.head(package_url)
+                if response.status_code != 200:
+                    package_url = None
+            
+            return package_url
+
+        elif language == 'python':
+            raise EasyBuildError("Python not supported yet")
+        elif language == 'perl':
+            raise EasyBuildError("Perl not supported yet")
+        else:
+            raise EasyBuildError("Language not supported: %s" % language)
+
+    def get_package_info(language, package_name, package_version=None):
+        """
+        Get package information from the corresponding database
+
+        :param language: language of the package ('python', 'perl', 'r')
+        :param package_name: name of package to search info for
+        :param package_version: version of package to search info for
         """
 
-        r = requests.get("http://crandb.r-pkg.org/" + ext_name)
+        # Delete version symbols
+        if package_version:
+            for symbol in ['>', '<', '=', '!', '*', ' ']:
+                package_version = package_version.replace(symbol, '')
 
-        if r.status_code != 200:
-            print_warning("Extension %s not found in CRAN database" % ext_name)
+        # TODO:vmachado: We should process the version parameter to get the correct version in '>', '<' and '!' cases
+
+        if language == 'r':
+            if package_version:
+                url = f"http://crandb.r-pkg.org/{package_name}/{package_version}"
+            else:
+                url = f"http://crandb.r-pkg.org/{package_name}"
+
+        elif language == 'python':
+            raise EasyBuildError("Python not supported yet")
+            if package_version:
+                url = f"https://pypi.org/pypi/{package_name}/{package_version}/json"
+            else:
+                url = f"https://pypi.org/pypi/{package_name}/json"
+
+        elif language == 'perl':
+            raise EasyBuildError("Perl not supported yet")
+            if package_version:
+                url = f"https://fastapi.metacpan.org/v1/release/{package_name}/{package_version}"
+            else:
+                url = f"https://fastapi.metacpan.org/v1/release/{package_name}"
+
+        else:
+            raise EasyBuildError("Language not supported: %s" % language)
+
+        response = requests.get(url)
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            if package_version:
+                print_warning("Package %s v%s not found in database %s" %
+                            package_name, package_version, url)
+            else:
+                print_warning("Package %s not found in database %s" %
+                            package_name, url)
             return None
-        else:
-            return r.json()
 
-    def calculate_md5(import_name, version):
+    def calculate_md5(language, package_name, package_version):
         """
-        Function to get source file and calculate the checksum
+        Calculate the MD5 hash of a given package
+
+        :param language: language of the package ('python', 'perl', 'r')
+        :param package_name: name of the package to calculate the MD5 hash
+        :param package_version: version of the package to calculate the MD5 hash
         """
 
-        md5_hash = hashlib.md5()
-        url = "https://cran.r-project.org/src/contrib/"
-        r = requests.get(url + import_name + '_' + version + '.tar.gz', stream=True)
-
-        if r.status_code != 200:
-            print_msg(import_name, 'not Found')
-        else:
-            for chunk in r.iter_content(chunk_size=8192):
-                if chunk:
+        # Get the package URL
+        package_url = get_package_url(language, package_name, package_version)
+        
+        # Check if package URL is found
+        if package_url:
+            # Download package and calculate its MD5 hash
+            md5_hash = hashlib.md5()
+            with requests.get(package_url, stream=True) as response:
+                # Check for HTTP errors and return None if any
+                try:
+                    response.raise_for_status()
+                except Exception as e:
+                    print_warning(f"Checksum calculation failed. Error downloading package {package_name} v{package_version}: {e}")
+                    return None
+                
+                for chunk in response.iter_content(chunk_size=8192):
                     md5_hash.update(chunk)
 
-        return md5_hash.hexdigest()
+            # Return the MD5 hash
+            return md5_hash.hexdigest()
 
-    def _get_r_imports(ext_name):
+        else:
+            # If the package is not found, return None
+            print_warning(
+                f"Checksum calculation failed. Package {package_name} v{package_version} not found")
+            return None
+
+    def _get_r_imports(ext_dict):
         """
         Get all imports of a given R extension
 
         :param ext: extension to get imports from
         """
 
-        ext_imports_formated = []
+        # Check if the extension is a dictionary
+        if not ext_dict or type(ext_dict) is not dict:
+            raise EasyBuildError("Invalid extension format")
+        
+        # Get the extension name
+        ext_name = ext_dict.get('name')
+
+        # Get the extension version
+        ext_version = ext_dict.get('version')
+
+        # Initialize the imports list
+        ext_imports = []
 
         # Get extension information from CRAN
-        ext_cran_info = get_ext_cran_info(ext_name)
+        package_info = get_package_info(language='r', package_name=ext_name, package_version=ext_version)
 
         # Parse, clean, and format the imports
-        if ext_cran_info is not None:
+        if package_info:
+
+            # TODO:vmachado: This checksum correction should not be here.
+
+            # Correct the package checksum
+            checksum = package_info.get('MD5sum')
+
+            if checksum:
+                ext_dict['options']['checksums'] = [package_info.get('MD5sum')]
+            else:
+                # Calculate the checksum if not found
+                checksum = calculate_md5(language='r', package_name=package_info.get('Package'), package_version=package_info.get('Version'))
 
             # Get the imports from the CRAN information
-            ext_imports = ext_cran_info.get('Imports')
+            package_imports = package_info.get('Imports')
 
-            if ext_imports is not None:
+            if package_imports:
 
                 # TODO:vmachado: Is this really needed? Where do we get these from? Do we need to extend this list?
                 imports_to_exclude = {'R', 'base', 'compiler', 'datasets', 'graphics',
@@ -4930,46 +5063,31 @@ def complete_dependencies(ecs):
                                       'utils'}
 
                 # Clean imports of default R packages to avoid cycle dependencies or retrieve the extension info from CRAN
-                for import_name in list(ext_imports.keys()):
+                for import_name, import_version in package_imports.items():
                     if import_name in imports_to_exclude:
-                        ext_imports.pop(import_name)
+                        package_imports.pop(import_name)
                     else:
+                        # Get the R package information
+                        import_pkg = get_package_info(language='r', package_name=import_name, package_version=import_version)
+                        if import_pkg:
+                            import_pkg_formatted = format_package_as_extension(language='r', package=import_pkg)
+                            ext_imports.append(import_pkg_formatted)
 
-                        ext_imports_formated.append(get_extension_info(import_name))
-                        # TODO:vmachado: should we check for the versions match between the extension and the import?
+        return ext_imports
 
-        return ext_imports_formated
+    def sort_dependencies(exts_list):
 
-    def get_imports(ext, ext_type):
         """
-        Get all imports of a given extension
+        Order the extensions based on their dependencies, assuming there are no circular dependencies.
 
-        :param extension: extension to get imports from
-        :param ext_type: type of the extension. Options: python, perl, r
+        :param ext_withexts_list_imports: extensions and imports to sort
         """
 
-        if ext_type == 'python':
-            # TODO:vmachado: pending to implement
-            raise EasyBuildError("get_import for 'python' extension is pending implement")
-        elif ext_type == 'perl':
-            # TODO:vmachado: pending to implement
-            raise EasyBuildError("get_import for 'perl' extension is pending implement")
-        elif ext_type == 'r':
-            return _get_r_imports(ext_name=ext.get('name'))
-        else:
-            raise EasyBuildError("Unknown extension type: %s" % ext_type)
-
-    def _sort_r_dependencies(ext_with_imports):
-        """
-        Order the R extensions based on their dependencies, assuming there are no circular dependencies.
-
-        :param ext_with_imports: extensions and imports to sort
-        """
-        # Format example of ext_with_imports R object
+        # Format example of exts_list object
         #    [{'name': 'credentials', 'version': '2.3.0', 'options': {...}, 'imports': [('openssl', '2.2.0'), ('sys', '3.4.2'), ...]}, ...]
 
         # Algorithm explanation:
-        # We will iterate over all ext_with_imports elements. For each element, we will check if it is a dependency of the already sorted extensions.
+        # We will iterate over all exts_list elements. For each element, we will check if it is a dependency of the already sorted extensions.
         # If it is, we will insert on top of the first dependency.
         # If it is not, we will insert at the end of the list. We will repeat this process until all elements are sorted.
         # No circular dependencies is assumed.
@@ -4979,7 +5097,7 @@ def complete_dependencies(ecs):
 
         ext_with_imports_sorted = []
 
-        for ext in ext_with_imports:
+        for ext in exts_list:
             # Variable to check if already inserted due to dependency constrain
             is_dependency = False
 
@@ -5003,159 +5121,38 @@ def complete_dependencies(ecs):
 
         return ext_with_imports_sorted
 
-    def sort_dependencies(ext_with_imports, ext_type):
+
+    def format_dependencies(exts_list):
         """
-        Order the extensions based on their dependencies, assuming there are no circular dependencies.
+        Format the extensions based on their type
 
-        :param ext_with_imports: extensions and imports to sort
-        :param ext_type: type of the extension. Options: python, perl, r
-        """
-
-        if ext_type == 'python':
-            # TODO:vmachado: pending to implement
-            raise EasyBuildError("sort_dependencies for 'python' extension is pending implement")
-        elif ext_type == 'perl':
-            # TODO:vmachado: pending to implement
-            raise EasyBuildError("sort_dependencies for 'perl' extension is pending implement")
-        elif ext_type == 'r':
-            return _sort_r_dependencies(ext_with_imports)
-        else:
-            raise EasyBuildError("Unknown extension type: %s" % ext_type)
-
-    def _format_r_dependencies(exts_list, exts_sorted):
-        """
-        Format the R extensions
-
-        :param exts_sorted: R extensions and imports to be formated
+        :param exts_list: extensions and imports to be formated
         """
 
-        # Format example of R dependency object
+        # exts_list example:
         #    [{'name': 'credentials', 'version': '2.3.0', 'options': {...}, 'imports': [('openssl', '2.2.0'), ('sys', '3.4.2'), ...]}, ...]
 
-        # Expand the imports on top of their extension
-        exts_expanded = []
-        for ext in exts_sorted:
-            exts_expanded.extend(ext['imports'])
-            exts_expanded.append(ext)
+        # Expand the imports on top of their extension and delete the imports from the extension
+        exts_formatted = []
+        for ext in exts_list:
+            exts_formatted.extend(ext['imports'])
+            exts_formatted.append((ext['name'], ext['version'], ext['options']))
 
         # Delete duplicates
+        # TODO:vmachado: keep the latest version of the duplicates
         seen = {}  # Use dictionary to keep track of seen items
         ext_clean = []
 
-        for ext in exts_expanded:
-
-            # If item is dictionary it means it was on the original extensions list.
-            # Get those values back as it has been formatted by easyblock parser
-
-            # TODO:vmachado: We are taking the original extension from the list. Shall we update the version and checksum using CRAN information?
-            if type(ext) is dict:
-                item_found = False
-                for exts_list_item in exts_list:
-                    if ext['name'] == exts_list_item[0]:
-                        ext = exts_list_item
-                        item_found = True
-                        break
-                if not item_found:
-                    raise EasyBuildError("Extension not found in original list: %s" % ext['name'])
-
+        for ext in exts_formatted:
             if ext[0] not in seen:
                 ext_clean.append(ext)
                 seen[ext[0]] = True
 
-        return ext_clean
 
-    def format_dependencies(exts_list, exts_sorted, ext_type):
-        """
-        Format the extensions based on their type
-
-        :param exts_sorted: extensions and imports to be formated
-        :param ext_type: type of the extension. Options: python, perl, r
-        """
-
-        if ext_type == 'python':
-            # TODO:vmachado: pending to implement
-            raise EasyBuildError("sort_dependencies for 'python' extension is pending implement")
-        elif ext_type == 'perl':
-            # TODO:vmachado: pending to implement
-            raise EasyBuildError("sort_dependencies for 'perl' extension is pending implement")
-        elif ext_type == 'r':
-            return _format_r_dependencies(exts_list, exts_sorted)
-        else:
-            raise EasyBuildError("Unknown extension type: %s" % ext_type)
-
-    def get_ext_type(ec):
-        """
-        Get the type of the extension
-
-        :param ec: EasyConfig instance to get the type from
-        """
-
-        type = None
-
-        ext_default_class = ec['ec']['exts_defaultclass']
-
-        if ext_default_class:
-
-            if ext_default_class == 'PythonPackage':
-                type = 'python'
-            elif ext_default_class == 'RPackage':
-                type = 'r'
-            elif ext_default_class == 'PerlModule':
-                type = 'perl'
-            else:
-                raise EasyBuildError(
-                    "Complete dependencies only supports Python, Perl and R EasyConfigs. Found exts_defaultclass: %s" % ext_default_class)
-        else:
-            # TODO:vmachado: In case there is no exts_defaultclass, we should check the type of the extension by other means.
-            raise EasyBuildError("No exts_defaultclass found in EasyConfig")
-
-        return type
-
-    #
-    # COMPLETE_DEPENDENCIES CODE
-    #
-
-    # TODO:vmachado: Delete this, it is just for testing
-    # _sort_r_dependencies([{'name': 'A', 'version': '2.3.0','imports': [('B', '2.2.0'), ('C', '3.4.2')]}, {'name': 'B', 'version': '2.3.0'}, {'name': 'C', 'version': '2.3.0','imports': [('B', '2.2.0')]}])
-
-
-    for ec in ecs:
-        # TODO:vmachado: Could we work directly with "ec['ec']['exts_list']" instead of "Completing dependencies..." & "Fetching sources..."?
-        # Do we need to use the EasyBlock instance instead of working directly with the ec value?
-        print_msg("Completing dependencies in %s" % (ec['spec']), log=_log)
-        ec_fn = os.path.basename(ec['spec'])
-        ectxt = read_file(ec['spec'])
-
-        print_msg("Fetching sources & patches for %s..." % ec_fn, log=_log)
-        app: EasyBlock = get_easyblock_instance(ec)
-        app.update_config_template_run_step()
-        app.fetch_step(skip_checksums=True)
-
-        # Get the type of the extension: python, perl, r
-        # TODO:vmachado: As I don't know how we will work with python and perl, I've implemented generic functions that then will call the correct Python/Perl/R functions.
-        # After python or perl installation we will see if this is the best approach.
-
-        ext_type = get_ext_type(ec)
-
-        # Get all extensions' imports
-        exts_with_imports = []
-        for ext in app.exts:
-            ext['imports'] = get_imports(ext, ext_type)
-            exts_with_imports.append(ext)
-
-        # Sort the extensions based on their dependencies
-        print_msg("Sorting extensions based on their dependencies...", log=_log)
-        exts_sorted = sort_dependencies(exts_with_imports, ext_type)
-
-        # Format the extension so it becomes a list of extensions with their imports on top of them
-        print_msg("Formatting dependencies...", log=_log)
-        exts_formated = format_dependencies(ec['ec']['exts_list'], exts_sorted, ext_type)
-
-        # rewrite file with right order of extensions.
-        print_msg('Writing new "exts_list" item...', log=_log)
+        # Format the extensions to be written in the EasyConfig file
         exts_list_lines = ['exts_list = [']
 
-        for item in exts_formated:
+        for item in ext_clean:
             item = str(item)
             parts = re.split('{|}', item)
             exts_list_lines.append('%s%s{' % (INDENT_4SPACES, parts[0],))
@@ -5164,12 +5161,169 @@ def complete_dependencies(ecs):
 
         exts_list_lines.append(']\n')
 
-        regex = re.compile(r'^exts_list(.|\n)*?\n\]\s*$', re.M)
-        ectxt = regex.sub('\n'.join(exts_list_lines), ectxt)
+        return exts_list_lines
+
+    def get_exts_with_imports(language, exts_list):
+        """
+        Get all extensions with their imports
+
+        :param language: language of the extensions
+        :param exts_list: list of extensions to get imports from
+        """
+
+        if not language:
+            raise EasyBuildError("Language not specified")
+        
+        if not exts_list:
+            raise EasyBuildError("Extensions list not specified")
+        
+        if not type(exts_list) is list:
+            raise EasyBuildError("Extensions list not a list")
+        
+        exts_with_imports = []
+
+        for ext in exts_list:
+            # Transform ext to dictionary to be edited
+            ext_dict = {"name": ext[0], "version": ext[1], "options": ext[2]}
+            
+            # Get imports
+            if language == 'r':
+                ext_dict['imports'] = _get_r_imports(ext_dict)
+            elif language == 'python':
+                raise EasyBuildError("Python not supported yet")
+            elif language == 'perl':
+                raise EasyBuildError("Perl not supported yet")
+            else:
+                raise EasyBuildError("Language not supported: %s" % language)
+             
+            # Append extensions with imports to the list
+            exts_with_imports.append(ext_dict)
+
+        return exts_with_imports
+
+    def get_language(ec):
+        """
+        Get the language of the extension
+
+        :param ec: EasyConfig instance to get the language from
+        """
+
+        if not ec:
+            raise EasyBuildError("get_language: EasyConfig not provided")
+        
+        if type(ec) is not dict:
+            raise EasyBuildError("get_language: EasyConfig is not a dictionary")
+
+        # Check exts_defaultclass
+        exts_defaultclass = ec.get('ec', {}).get('exts_defaultclass', '')
+        if exts_defaultclass:
+            if exts_defaultclass.lower() in ['pythonpackage', 'pythonextension']:
+                return 'python'
+            elif exts_defaultclass.lower() in ['perlmodule', 'perlextension']:
+                return 'perl'
+            elif exts_defaultclass.lower() in ['rpackage', 'rextension']:
+                return 'r'
+
+        # Check specific EasyBlock parameters
+        easyblock = ec.get('ec', {}).get('easyblock', '')
+        if easyblock:
+            if easyblock.lower() in ['pythonpackage', 'pythonextension', 'pythonbundle']:
+                return 'python'
+            elif easyblock.lower() in ['perlmodule', 'perlextension', 'perlbundle']:
+                return 'perl'
+            elif easyblock.lower() in ['rpackage', 'rextension', 'rbundle']:
+                return 'r'
+
+        # Check toolchain
+        toolchain = ec.get('ec', {}).get('toolchain', {}).get('name', '')
+        if toolchain:
+            if toolchain.lower() in ['python', 'python3', 'pythontoolchain']:
+                return 'python'
+            elif toolchain.lower() in ['perl', 'perltoolchain']:
+                return 'perl'
+            elif toolchain.lower() in ['r', 'rtoolchain']:
+                return 'r'
+
+        # Check dependencies
+        dependencies = ec.get('ec', {}).get('dependencies', [])
+        for dep in dependencies:
+            dep_name = dep.get('name', '').lower()
+            if 'python' in dep_name:
+                return 'python'
+            elif 'perl' in dep_name:
+                return 'perl'
+            elif 'r' in dep_name:
+                return 'r'
+
+        return None
+
+    #
+    # COMPLETE_DEPENDENCIES CODE
+    #
+
+    # TODO:vmachado: Delete this, it is just for testing
+    # _sort_r_dependencies([{'name': 'A', 'version': '2.3.0','imports': [('B', '2.2.0'), ('C', '3.4.2')]}, {'name': 'B', 'version': '2.3.0'}, {'name': 'C', 'version': '2.3.0','imports': [('B', '2.2.0')]}])
+
+    if not ecs:
+        print_warning("No EasyConfigs to complete dependencies for.")
+        return
+
+    for ec in ecs:
+
+        if type(ec) is not dict:
+            raise EasyBuildError("EasyConfig is not a dictionary")
+
+        # Get the ext_list from the EasyConfig
+        print_msg("Getting extensions from EasyConfig file...", log=_log)
+        exts_list = ec.get('ec', {}).get('exts_list', None)
+        
+        # Check if there are extensions to be completed
+        if not exts_list:
+            print_warning("No extensions to be completed in %s. Skipping EasyConfig file completion..." %
+                          (ec['spec']), log=_log)
+            continue
+
+        # Get the language of the EasyCopfig to complete the dependencies
+        print_msg("Getting programming language from EasyConfig file...", log=_log)
+        language = get_language(ec)
+
+        # Check if language is supported
+        if not language:
+            print_warning("Language (perl, python, r) not found for %s. Skipping EasyConfig file completion..." %
+                          ec['spec'], log=_log)
+            continue
+
+        print_msg("Detected '%s' language..." % language, log=_log)
+
+        # Check if the language is supported
+        if language == 'perl':
+            print_warning("Perl not supported yet. Skipping easyconfig...", log=_log)
+            continue
+
+        if language == 'python':
+            print_warning("Python not supported yet. Skipping easyconfig...", log=_log)
+            continue
+
+        # Get all extensions' imports in format [{'name': 'A', 'version': '2.3.0','imports': [('B', '2.2.0'), ('C', '3.4.2')]}, ...]
+        print_msg("Getting dependencies of all extensions...", log=_log)
+        exts_list = get_exts_with_imports(language, exts_list)
+
+        # Sort the extensions based on their dependencies
+        print_msg("Sorting extensions based on their dependencies...", log=_log)
+        exts_list = sort_dependencies(exts_list)
+
+        # Format the extension so it becomes a list of extensions with their imports on top of them
+        print_msg("Formatting dependencies to match EasyConfig standards...", log=_log)
+        exts_list = format_dependencies(exts_list)
 
         # Back up easyconfig file before injecting checksums
         ec_backup = back_up_file(ec['spec'])
-        print_msg('Backign up of easyconfig file at "%s" ...' % ec_backup, log=_log)
+        print_msg('Backing up of EasyConfig file at "%s" ...' % ec_backup, log=_log)
 
         # Write the new easyconfig file
+        print_msg('Writing new EasyConfig file...', log=_log)
+        regex = re.compile(r'^exts_list(.|\n)*?\n\]\s*$', re.M)
+        ectxt = regex.sub('\n'.join(exts_list), read_file(ec['spec']))
         write_file(ec['spec'], ectxt)
+
+        print_msg('Done', log=_log)

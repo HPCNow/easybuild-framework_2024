@@ -537,6 +537,9 @@ def process_eb_args(eb_args, eb_go, cfg_settings, modtool, testing, init_session
     elif options.complete_dependencies:
         with rich_live_cm():
             complete_dependencies(ordered_ecs)
+        
+        # TODO:vmachado: We only want to complete dependencies, not build the software, right? Can we exit here ?
+        return True
 
     # cleanup and exit after dry run, searching easyconfigs or submitting regression test
     stop_options = [
