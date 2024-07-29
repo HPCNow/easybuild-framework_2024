@@ -55,6 +55,7 @@ import traceback
 import requests
 import hashlib
 from datetime import datetime
+from html.parser import HTMLParser
 
 import easybuild.tools.environment as env
 import easybuild.tools.toolchain as toolchain
@@ -4850,32 +4851,49 @@ def complete_dependencies(ecs):
     # COMPLETE_DEPENDENCIES FUNCTIONS
     #
 
-    def format_package_as_extension(language, package):
+    def get_lowest_version(version1, version2):
         """
-        Format package information as an extension
+        Get the lowest version of two versions.
 
-        :param language: language of the package ('python', 'perl', 'r')
-        :param package: package information to format
+        If one of the versions is None, the other version is returned.
+        If both versions are None, None is returned.
+        If both versions are equal, None is returned
+        
+        :param version1: version to compare
+        :param version2: version to compare against
         """
-    
-        if language == 'r':
-            package_name = package.get('Package')
-            package_version = package.get('Version')
-            checksum = package.get('MD5sum')
 
-            if not checksum:
-                checksum = calculate_md5(language, package_name, package_version)
+        if version1 is None:
+            return version2
+        
+        if version2 is None:
+            return version1
+        
+        v1 = tuple(map(int, re.split(r'[.-]', version1)))
+        v2 = tuple(map(int, re.split(r'[.-]', version2)))
 
-            package_options = {'checksums': [checksum]}
-                                                                             
-        elif language == 'python':
-            raise EasyBuildError("Python not supported yet")
-        elif language == 'perl':
-            raise EasyBuildError("Perl not supported yet")
+        if v1 < v2:
+            return version1
+        elif v2 < v1:
+            return version2
         else:
-            raise EasyBuildError("Language not supported: %s" % language)
+            return None
 
-        return (package_name, package_version, package_options)
+    def clean_version(package_version):
+        """
+        Clean the package version string from unwanted characters
+
+        :param package_version: package version string to clean
+        """
+
+        if not package_version:
+            return None
+        
+        # Allowed characters in package_version
+        allowed_chars = r'[^0-9><=!*. \-]'
+
+        # Delete all characters that are not allowed
+        return re.sub(allowed_chars, '', package_version)
 
     def get_package_url(language, package_name, package_version):
         """
@@ -4885,26 +4903,23 @@ def complete_dependencies(ecs):
         :param package_name: name of package to search for
         :param package_version: version of package to search for
         """
+
         if not language:
-            raise EasyBuildError("get_package_url: Language not specified")
+            raise EasyBuildError("Language not specified")
 
         if not package_name:
-            raise EasyBuildError("get_package_url: Package name not specified")
-        
-        if not package_version:
-            raise EasyBuildError("get_package_url: Package version not specified")
-        
-        # Delete version symbols
-        if package_version:
-            for symbol in ['>', '<', '=', '!', '*', ' ']:
-                package_version = package_version.replace(symbol, '')
+            raise EasyBuildError("Package name not specified")
 
-        # TODO:vmachado: We should process the version parameter to get the correct version in '>', '<' and '!' cases
+        if not package_version:
+            raise EasyBuildError("Package version not specified")
+
+        # Clean the package version string from unwanted chars
+        package_version = clean_version(package_version)
 
         if language == 'r':
             base_url = "https://cran.r-project.org/src/contrib/"
             package_url = base_url + package_name + '_' + package_version + '.tar.gz'
-            
+
             # Check if package is found in the CRAN database of latests releases
             response = requests.head(package_url)
             if response.status_code == 404:
@@ -4916,7 +4931,7 @@ def complete_dependencies(ecs):
                 response = requests.head(package_url)
                 if response.status_code != 200:
                     package_url = None
-            
+
             return package_url
 
         elif language == 'python':
@@ -4925,6 +4940,66 @@ def complete_dependencies(ecs):
             raise EasyBuildError("Perl not supported yet")
         else:
             raise EasyBuildError("Language not supported: %s" % language)
+
+    def get_previous_releases_from_cran_archive(package_name):
+        """
+        Get all previous releases of a package from the CRAN Archive.
+
+        :param package_name: name of the package to search info for
+        :return: list of all previous releases
+        """
+        class CRANArchiveParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.releases = []
+
+            def handle_starttag(self, tag, attrs):
+                if tag == 'a':
+                    for attr in attrs:
+                        if attr[0] == 'href' and attr[1].endswith('.tar.gz'):
+                            version = attr[1].split('_')[1].replace('.tar.gz', '')
+                            self.releases.append(version)
+
+        url = f"https://cran.r-project.org/src/contrib/Archive/{package_name}/"
+        response = requests.get(url)
+
+        if response.status_code != 200:
+            raise Exception(f"Failed to fetch package info for {package_name}")
+
+        parser = CRANArchiveParser()
+        parser.feed(response.text)
+
+        return parser.releases
+
+    def get_all_package_releases(language, package_name):
+        """
+        Get the package releases from the corresponding database
+
+        :param language: language of the package ('python', 'perl', 'r')
+        :param package_name: name of package to search for
+        """
+
+        if not language:
+            raise EasyBuildError("Language not specified")
+
+        if not package_name:
+            raise EasyBuildError("Package name not specified")
+
+        releases = []
+
+        if language == 'r':
+            releases = get_previous_releases_from_cran_archive(package_name)  # Previous releases
+            latest_package_info = get_package_info(language, package_name)  # Latest release
+            releases.append(latest_package_info['Version'])
+
+        elif language == 'python':
+            raise EasyBuildError("Python not supported yet")
+        elif language == 'perl':
+            raise EasyBuildError("Perl not supported yet")
+        else:
+            raise EasyBuildError("Language not supported: %s" % language)
+        
+        return releases
 
     def get_package_info(language, package_name, package_version=None):
         """
@@ -4935,12 +5010,15 @@ def complete_dependencies(ecs):
         :param package_version: version of package to search info for
         """
 
-        # Delete version symbols
-        if package_version:
-            for symbol in ['>', '<', '=', '!', '*', ' ']:
-                package_version = package_version.replace(symbol, '')
+        if not language:
+            raise EasyBuildError("Language not specified")
 
-        # TODO:vmachado: We should process the version parameter to get the correct version in '>', '<' and '!' cases
+        if not package_name:
+            raise EasyBuildError("Package name not specified")
+
+        if package_version:
+            # Delete all characters that are not allowed
+            package_version = clean_version(package_version)
 
         if language == 'r':
             if package_version:
@@ -4972,10 +5050,10 @@ def complete_dependencies(ecs):
         else:
             if package_version:
                 print_warning("Package %s v%s not found in database %s" %
-                            package_name, package_version, url)
+                              package_name, package_version, url)
             else:
                 print_warning("Package %s not found in database %s" %
-                            package_name, url)
+                              package_name, url)
             return None
 
     def calculate_md5(language, package_name, package_version):
@@ -4987,9 +5065,18 @@ def complete_dependencies(ecs):
         :param package_version: version of the package to calculate the MD5 hash
         """
 
+        if not language:
+            raise EasyBuildError("Language not specified")
+
+        if not package_name:
+            raise EasyBuildError("Package name not specified")
+
+        if not package_version:
+            raise EasyBuildError("Package version not specified")
+        
         # Get the package URL
         package_url = get_package_url(language, package_name, package_version)
-        
+
         # Check if package URL is found
         if package_url:
             # Download package and calculate its MD5 hash
@@ -4999,9 +5086,10 @@ def complete_dependencies(ecs):
                 try:
                     response.raise_for_status()
                 except Exception as e:
-                    print_warning(f"Checksum calculation failed. Error downloading package {package_name} v{package_version}: {e}")
+                    print_warning(
+                        f"Checksum calculation failed. Error downloading package {package_name} v{package_version}: {e}")
                     return None
-                
+
                 for chunk in response.iter_content(chunk_size=8192):
                     md5_hash.update(chunk)
 
@@ -5014,101 +5102,35 @@ def complete_dependencies(ecs):
                 f"Checksum calculation failed. Package {package_name} v{package_version} not found")
             return None
 
-    def _get_r_imports(ext_dict):
+    def sort_dependencies(extensions):
         """
-        Get all imports of a given R extension
+        Order the extensions based on their dependencies
 
-        :param ext: extension to get imports from
-        """
+        It will iterate over all extensions. 
+        For each element, it will check if it is a dependency of the already sorted extensions.
+        If it is, it will insert on top that dependency.
+        If it is not, we will insert at the end of the list.
 
-        # Check if the extension is a dictionary
-        if not ext_dict or type(ext_dict) is not dict:
-            raise EasyBuildError("Invalid extension format")
-        
-        # Get the extension name
-        ext_name = ext_dict.get('name')
-
-        # Get the extension version
-        ext_version = ext_dict.get('version')
-
-        # Initialize the imports list
-        ext_imports = []
-
-        # Get extension information from CRAN
-        package_info = get_package_info(language='r', package_name=ext_name, package_version=ext_version)
-
-        # Parse, clean, and format the imports
-        if package_info:
-
-            # TODO:vmachado: This checksum correction should not be here.
-
-            # Correct the package checksum
-            checksum = package_info.get('MD5sum')
-
-            if checksum:
-                ext_dict['options']['checksums'] = [package_info.get('MD5sum')]
-            else:
-                # Calculate the checksum if not found
-                checksum = calculate_md5(language='r', package_name=package_info.get('Package'), package_version=package_info.get('Version'))
-
-            # Get the imports from the CRAN information
-            package_imports = package_info.get('Imports')
-
-            if package_imports:
-
-                # TODO:vmachado: Is this really needed? Where do we get these from? Do we need to extend this list?
-                imports_to_exclude = {'R', 'base', 'compiler', 'datasets', 'graphics',
-                                      'grDevices', 'grid', 'methods', 'parallel',
-                                      'splines', 'stats', 'stats4', 'tcltk', 'tools',
-                                      'utils'}
-
-                # Clean imports of default R packages to avoid cycle dependencies or retrieve the extension info from CRAN
-                for import_name, import_version in package_imports.items():
-                    if import_name in imports_to_exclude:
-                        package_imports.pop(import_name)
-                    else:
-                        # Get the R package information
-                        import_pkg = get_package_info(language='r', package_name=import_name, package_version=import_version)
-                        if import_pkg:
-                            import_pkg_formatted = format_package_as_extension(language='r', package=import_pkg)
-                            ext_imports.append(import_pkg_formatted)
-
-        return ext_imports
-
-    def sort_dependencies(exts_list):
-
-        """
-        Order the extensions based on their dependencies, assuming there are no circular dependencies.
-
-        :param ext_withexts_list_imports: extensions and imports to sort
+        :param extensions: extensions and imports to sort
         """
 
-        # Format example of exts_list object
-        #    [{'name': 'credentials', 'version': '2.3.0', 'options': {...}, 'imports': [('openssl', '2.2.0'), ('sys', '3.4.2'), ...]}, ...]
+        if not extensions:
+            return []
 
-        # Algorithm explanation:
-        # We will iterate over all exts_list elements. For each element, we will check if it is a dependency of the already sorted extensions.
-        # If it is, we will insert on top of the first dependency.
-        # If it is not, we will insert at the end of the list. We will repeat this process until all elements are sorted.
-        # No circular dependencies is assumed.
+        exts_with_dependencies_sorted = []
 
-        # TODO:vmachado: Shall we check for circular dependencies?
-        # TODO:vmachado: This algorithm could be improved to avoid multiple iterations over the list. We could use a dictionary to store the dependencies and their indexes.
-
-        ext_with_imports_sorted = []
-
-        for ext in exts_list:
+        for ext in extensions:
             # Variable to check if already inserted due to dependency constrain
             is_dependency = False
 
             # Iterate over the already sorted extensions
-            for index, ext_sorted in enumerate(ext_with_imports_sorted):
+            for index, ext_sorted in enumerate(exts_with_dependencies_sorted):
 
                 # Check if the extension is a dependency of the already sorted extensions
-                if ext['name'] in [ext_name for ext_name, *rest in ext_sorted.get('imports', [])]:
+                if ext['name'] in ext_sorted.get('dependencies', {}).keys():
 
                     # Insert the extension on top of the first dependency
-                    ext_with_imports_sorted.insert(index, ext)
+                    exts_with_dependencies_sorted.insert(index, ext)
 
                     # Mark the extension as already inserted
                     is_dependency = True
@@ -5117,42 +5139,62 @@ def complete_dependencies(ecs):
 
             # If the extension is not a dependency of the already sorted extensions, insert at the end of the list
             if not is_dependency:
-                ext_with_imports_sorted.append(ext)
+                exts_with_dependencies_sorted.append(ext)
 
-        return ext_with_imports_sorted
+        return exts_with_dependencies_sorted
 
+    def delete_duplicated_dependencies(extensions):
+        """
+        Delete duplicates from the list of extensions.
+        
+        Keep the lowest version of the duplicated extensions in the position of first appearance.
+        We already searched for the highest version that satisfied the constraints.
 
-    def format_dependencies(exts_list):
+        :param extensions: extensions to delete duplicates from
+        """
+
+        if not extensions:
+            return []
+
+        extensions_clean = []
+
+        for ext in extensions:
+
+            is_already_in = False
+
+            # Check if the extension is already in the list
+            for index, item in enumerate(extensions_clean):
+                if item['name'] == ext['name']:
+                    is_already_in = True
+                    lowest_version = get_lowest_version(item['version'], ext['version'])
+                    if ext['version'] == lowest_version:
+                        extensions_clean[index] = ext
+                    break
+
+            if not is_already_in:
+                extensions_clean.append(ext)
+
+        return extensions_clean
+
+    def format_dependencies(extensions):
         """
         Format the extensions based on their type
 
-        :param exts_list: extensions and imports to be formated
+        :param extensions: extensions and dependencies to be formated
         """
 
-        # exts_list example:
-        #    [{'name': 'credentials', 'version': '2.3.0', 'options': {...}, 'imports': [('openssl', '2.2.0'), ('sys', '3.4.2'), ...]}, ...]
+        if not extensions:
+            raise EasyBuildError("Extensions list not specified")
 
-        # Expand the imports on top of their extension and delete the imports from the extension
-        exts_formatted = []
-        for ext in exts_list:
-            exts_formatted.extend(ext['imports'])
-            exts_formatted.append((ext['name'], ext['version'], ext['options']))
-
-        # Delete duplicates
-        # TODO:vmachado: keep the latest version of the duplicates
-        seen = {}  # Use dictionary to keep track of seen items
-        ext_clean = []
-
-        for ext in exts_formatted:
-            if ext[0] not in seen:
-                ext_clean.append(ext)
-                seen[ext[0]] = True
-
+        # Format as EasyConfig extensions
+        extensions_formatted = []
+        for ext in extensions:
+            extensions_formatted.append((ext['name'], ext['version'], ext['options']))
 
         # Format the extensions to be written in the EasyConfig file
         exts_list_lines = ['exts_list = [']
 
-        for item in ext_clean:
+        for item in extensions_formatted:
             item = str(item)
             parts = re.split('{|}', item)
             exts_list_lines.append('%s%s{' % (INDENT_4SPACES, parts[0],))
@@ -5163,43 +5205,203 @@ def complete_dependencies(ecs):
 
         return exts_list_lines
 
-    def get_exts_with_imports(language, exts_list):
+    def process_package_version_constraints(language, package_name, package_version_constraints):
         """
-        Get all extensions with their imports
+        Get latest package version that satisfies the constraints even if it changes the major version.
+        This way toolchain compilation is less likely to fail.
 
-        :param language: language of the extensions
-        :param exts_list: list of extensions to get imports from
+        :param language: language of the package ('python', 'perl', 'r')
+        :param package_name: name of the package to search info for
+        :param package_version_constraints: version of the package to search info for
         """
 
         if not language:
             raise EasyBuildError("Language not specified")
-        
-        if not exts_list:
-            raise EasyBuildError("Extensions list not specified")
-        
-        if not type(exts_list) is list:
-            raise EasyBuildError("Extensions list not a list")
-        
-        exts_with_imports = []
 
-        for ext in exts_list:
-            # Transform ext to dictionary to be edited
-            ext_dict = {"name": ext[0], "version": ext[1], "options": ext[2]}
+        if not package_name:
+            raise EasyBuildError("Extensions list not specified")
+
+        if not package_version_constraints:
+            return None
+
+        # Current selected version. None means we will get latest version
+        version = None
+
+        # List of constraints that are pending to be processed as we need all package's released versions
+        pending_constraints = []
+
+        # Clean the package version string from unwanted chars
+        package_version_constraints = clean_version(package_version_constraints)
+
+        # Get the version and its constraints
+        constraints = package_version_constraints.split()
+
+        i = 0
+        while i < len(constraints):
+            constraint = constraints[i]
+
+            if constraint == '*':
+                # Get the latest version
+                # Discard any other constraints as they are in contradiction with the '*'
+                version = None
+                pending_constraints = []
+                break
+
+            elif constraint == '=':
+                # Get the specified version.
+                # Discard any other constraints as they are in contradiction with the '='
+                version = constraints[i + 1]
+                pending_constraints = []
+                break
+
+            elif constraint == '>':
+                # Get the latest but keep processing for other constraints
+                version = None
+                # Discard the numbers after the symbol
+                i = i + 1
+
+            elif constraint == '>=':
+                # Get the latest but keep processing for other constraints
+                version = None
+                # Discard the numbers after the symbol
+                i = i + 1
+
+            elif constraint == '<=':
+                # Get the specified version
+                # Discard any other constraints as they are in contradiction with the '<='
+                version = constraints[i + 1]
+                pending_constraints = []
+                break
+
+            elif constraint == '<':
+                # To deal with this constraint we need to get all available versions. Process later
+                pending_constraints.append(constraints[i])  # Append constraint
+                pending_constraints.append(constraints[i + 1])  # Append constraint's version
+                i = i + 1  # Discard the numbers after the symbol
+
+            elif constraint == '!=':
+                # To deal with this constraint we need to get all available versions. Process later
+                pending_constraints.append(constraints[i])  # Append constraint
+                pending_constraints.append(constraints[i + 1])  # Append constraint's version
+                i = i + 1  # Discard the numbers after the symbol
+
+            else:
+                # There is no version constraint, just the version numbers
+                version = constraint
             
-            # Get imports
+            i = i + 1
+
+        # If we have pending constraints it means we have "<" or "!=" constraints
+        if pending_constraints:
+
+            releases = get_all_package_releases(language, package_name)
+
+            # Iterate backwards over relases to get the latest version that satisfies the constraints
+            for release in reversed(releases):
+
+                # Check if we have pending constraints to be processed.
+                if not pending_constraints:
+                    # No more constraints to process
+                    # Keep the previous found version
+                    break
+
+                else:
+                    if pending_constraints[0] == '<':
+                        lower_version = get_lowest_version(release, pending_constraints[1])
+                       
+                        if release == lower_version:
+                            version = release
+
+                            # Discard constraint and version as they are fulfilled
+                            pending_constraints.pop(0)
+                            pending_constraints.pop(0)
+
+                    elif pending_constraints[0] == '!=':
+                        if release != pending_constraints[1]:
+                            version = release
+
+                            # Discard constraint and version as they are fulfilled
+                            pending_constraints.pop(0)
+                            pending_constraints.pop(0)
+                    else:
+                        # We should not be here, print warning message and keep the current version
+                        print_warning("Unknown version constraint detected. Package: %s, Version: %s " % package_name, package_version_constraints, log=_log)
+                        version = release
+                        break
+
+        return version
+
+    def get_all_dependencies(language, extensions):
+        """
+        Get all extensions with their dependencies.
+        This function is called recursively to also get dependencies of dependencies.
+
+        :param language: language of the extensions
+        :param extensions: list of extensions to get imports from
+        """
+
+        if not language:
+            raise EasyBuildError("Language not specified")
+
+        if not extensions:
+            raise EasyBuildError("Extensions list not specified")
+
+        if not type(extensions) is list:
+            raise EasyBuildError("Extensions list not a list")
+
+        exts_with_dependencies = []
+
+        for ext in extensions:
+            # Transform ext to dictionary to be edited
+            extension_dict = {"name": ext[0], "version": ext[1], "options": ext[2]}
+
             if language == 'r':
-                ext_dict['imports'] = _get_r_imports(ext_dict)
+
+                # Get the package information from the CRAN database
+                package_info = get_package_info(
+                    language='r', package_name=extension_dict['name'], package_version=extension_dict['version'])
+                
+                # Asure version from database
+                extension_dict['version'] = package_info.get('Version')  
+
+                # Get the checksum from database
+                checksum = package_info.get('MD5sum', None)
+
+                # If no checksum, then calculate it
+                if not checksum:
+                    checksum = calculate_md5(language, extension_dict['name'], extension_dict['version'])
+
+                extension_dict['options']['checksums'] = [checksum]  
+            
+                # Get dependencies from the package
+                dependencies = package_info.get('Imports', {})
+
             elif language == 'python':
                 raise EasyBuildError("Python not supported yet")
+
             elif language == 'perl':
                 raise EasyBuildError("Perl not supported yet")
+
             else:
                 raise EasyBuildError("Language not supported: %s" % language)
-             
-            # Append extensions with imports to the list
-            exts_with_imports.append(ext_dict)
 
-        return exts_with_imports
+            # Append extensions' dependencies to the list
+            if dependencies:
+                for package_name, package_version_constraints in dependencies.items():
+
+                    # Process version constraints and correct dependency version
+                    package_version = process_package_version_constraints(language, package_name, package_version_constraints)
+
+                    # Check if the dependency has dependencies
+                    sub_dependency = get_all_dependencies(language, [(package_name, package_version, {})])
+
+                    # Append those dependencies to the list. They are placed on top of the current extension
+                    exts_with_dependencies.extend(sub_dependency)
+
+            extension_dict['dependencies'] = dependencies
+            exts_with_dependencies.append(extension_dict)
+
+        return exts_with_dependencies
 
     def get_language(ec):
         """
@@ -5210,7 +5412,7 @@ def complete_dependencies(ecs):
 
         if not ec:
             raise EasyBuildError("get_language: EasyConfig not provided")
-        
+
         if type(ec) is not dict:
             raise EasyBuildError("get_language: EasyConfig is not a dictionary")
 
@@ -5261,24 +5463,23 @@ def complete_dependencies(ecs):
     # COMPLETE_DEPENDENCIES CODE
     #
 
-    # TODO:vmachado: Delete this, it is just for testing
-    # _sort_r_dependencies([{'name': 'A', 'version': '2.3.0','imports': [('B', '2.2.0'), ('C', '3.4.2')]}, {'name': 'B', 'version': '2.3.0'}, {'name': 'C', 'version': '2.3.0','imports': [('B', '2.2.0')]}])
-
     if not ecs:
-        print_warning("No EasyConfigs to complete dependencies for.")
+        print_warning("No EasyConfigs to complete dependencies for...", log=_log)
         return
 
     for ec in ecs:
+
+        print_msg("\nCompleting dependencies for EasyConfig file %s..." % ec['spec'], log=_log)
 
         if type(ec) is not dict:
             raise EasyBuildError("EasyConfig is not a dictionary")
 
         # Get the ext_list from the EasyConfig
-        print_msg("Getting extensions from EasyConfig file...", log=_log)
-        exts_list = ec.get('ec', {}).get('exts_list', None)
-        
+        print_msg("Getting extensions list from EasyConfig file...", log=_log)
+        extensions = ec.get('ec', {}).get('exts_list', None)
+
         # Check if there are extensions to be completed
-        if not exts_list:
+        if not extensions:
             print_warning("No extensions to be completed in %s. Skipping EasyConfig file completion..." %
                           (ec['spec']), log=_log)
             continue
@@ -5304,26 +5505,36 @@ def complete_dependencies(ecs):
             print_warning("Python not supported yet. Skipping easyconfig...", log=_log)
             continue
 
-        # Get all extensions' imports in format [{'name': 'A', 'version': '2.3.0','imports': [('B', '2.2.0'), ('C', '3.4.2')]}, ...]
+        # Current format of extensions:
+        #   [('credentials', '2.0.1', {...}), (...)]
+
+        # Get all extensions' dependencies
         print_msg("Getting dependencies of all extensions...", log=_log)
-        exts_list = get_exts_with_imports(language, exts_list)
+        extensions = get_all_dependencies(language, extensions)
+
+        # Current format of extensions:
+        #   [{'name': 'credentials', 'version': '2.0.1', 'options': {...}, 'dependencies':{'openssl':'>= 1.3, ...}}, {...}]
 
         # Sort the extensions based on their dependencies
         print_msg("Sorting extensions based on their dependencies...", log=_log)
-        exts_list = sort_dependencies(exts_list)
+        extensions = sort_dependencies(extensions)
 
-        # Format the extension so it becomes a list of extensions with their imports on top of them
-        print_msg("Formatting dependencies to match EasyConfig standards...", log=_log)
-        exts_list = format_dependencies(exts_list)
+        # Delete duplicates from the list
+        print_msg("Deleting duplicated dependencies...", log=_log)
+        extensions = delete_duplicated_dependencies(extensions)
 
-        # Back up easyconfig file before injecting checksums
-        ec_backup = back_up_file(ec['spec'])
-        print_msg('Backing up of EasyConfig file at "%s" ...' % ec_backup, log=_log)
+        # Format the extension's dependencies to match EasyConfig format
+        print_msg("Formatting dependencies to match EasyConfig format...", log=_log)
+        extensions = format_dependencies(extensions)
 
         # Write the new easyconfig file
+        output_filename = ec['spec'].replace('.eb', '.completed')
         print_msg('Writing new EasyConfig file...', log=_log)
-        regex = re.compile(r'^exts_list(.|\n)*?\n\]\s*$', re.M)
-        ectxt = regex.sub('\n'.join(exts_list), read_file(ec['spec']))
-        write_file(ec['spec'], ectxt)
 
-        print_msg('Done', log=_log)
+        regex = re.compile(r'^exts_list(.|\n)*?\n\]\s*$', re.M)
+        ectxt = regex.sub('\n'.join(extensions), read_file(ec['spec']))
+
+        write_file(output_filename, ectxt)
+
+        # Print success message
+        print_msg('EasyConfig file "%s" written successfully!\n' % output_filename, log=_log)
