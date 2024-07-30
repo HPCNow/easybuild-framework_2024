@@ -5102,47 +5102,6 @@ def complete_dependencies(ecs):
                 f"Checksum calculation failed. Package {package_name} v{package_version} not found")
             return None
 
-    def sort_dependencies(extensions):
-        """
-        Order the extensions based on their dependencies
-
-        It will iterate over all extensions. 
-        For each element, it will check if it is a dependency of the already sorted extensions.
-        If it is, it will insert on top that dependency.
-        If it is not, we will insert at the end of the list.
-
-        :param extensions: extensions and imports to sort
-        """
-
-        if not extensions:
-            return []
-
-        exts_with_dependencies_sorted = []
-
-        for ext in extensions:
-            # Variable to check if already inserted due to dependency constrain
-            is_dependency = False
-
-            # Iterate over the already sorted extensions
-            for index, ext_sorted in enumerate(exts_with_dependencies_sorted):
-
-                # Check if the extension is a dependency of the already sorted extensions
-                if ext['name'] in ext_sorted.get('dependencies', {}).keys():
-
-                    # Insert the extension on top of the first dependency
-                    exts_with_dependencies_sorted.insert(index, ext)
-
-                    # Mark the extension as already inserted
-                    is_dependency = True
-
-                    break
-
-            # If the extension is not a dependency of the already sorted extensions, insert at the end of the list
-            if not is_dependency:
-                exts_with_dependencies_sorted.append(ext)
-
-        return exts_with_dependencies_sorted
-
     def delete_duplicated_dependencies(extensions):
         """
         Delete duplicates from the list of extensions.
@@ -5277,18 +5236,19 @@ def complete_dependencies(ecs):
                 # To deal with this constraint we need to get all available versions. Process later
                 pending_constraints.append(constraints[i])  # Append constraint
                 pending_constraints.append(constraints[i + 1])  # Append constraint's version
-                i = i + 1  # Discard the numbers after the symbol
+                i = i + 1  # Discard the version after the symbol
 
             elif constraint == '!=':
                 # To deal with this constraint we need to get all available versions. Process later
                 pending_constraints.append(constraints[i])  # Append constraint
                 pending_constraints.append(constraints[i + 1])  # Append constraint's version
-                i = i + 1  # Discard the numbers after the symbol
+                i = i + 1  # Discard the version after the symbol
 
             else:
-                # There is no version constraint, just the version numbers
+                # There is no version constraint, just the version
                 version = constraint
             
+            # Process next constraint
             i = i + 1
 
         # If we have pending constraints it means we have "<" or "!=" constraints
@@ -5331,10 +5291,12 @@ def complete_dependencies(ecs):
 
         return version
 
-    def get_all_dependencies(language, extensions):
+    def get_all_dependencies(language, extensions, processed=[]):
         """
         Get all extensions with their dependencies.
+
         This function is called recursively to also get dependencies of dependencies.
+        This list is also the ordered list of dependencies (although we need to check later for duplicates).
 
         :param language: language of the extensions
         :param extensions: list of extensions to get imports from
@@ -5352,29 +5314,43 @@ def complete_dependencies(ecs):
         exts_with_dependencies = []
 
         for ext in extensions:
-            # Transform ext to dictionary to be edited
-            extension_dict = {"name": ext[0], "version": ext[1], "options": ext[2]}
+            ext_name = ext[0]
+            ext_version = ext[1]
+            ext_options = ext[2]
+            ext_dependencies = None
+
+            # Skip already processed extensions that match name and version.
+            # Else, add them to the processed list to avoid processing them again.
+            if any((item[0] == ext_name and item[1] == ext_version) for item in processed):
+                continue
+            else:
+                processed.append((ext_name, ext_version))
 
             if language == 'r':
 
-                # Get the package information from the CRAN database
+                # Get the package information
                 package_info = get_package_info(
-                    language='r', package_name=extension_dict['name'], package_version=extension_dict['version'])
+                    language='r', package_name=ext_name, package_version=ext_version)
                 
+                if not package_info:
+                    print_warning("Package information not found for %s. Skipping package..." % (ext_name))
+                    continue
+
                 # Asure version from database
-                extension_dict['version'] = package_info.get('Version')  
+                ext_version = package_info.get('Version')
 
                 # Get the checksum from database
                 checksum = package_info.get('MD5sum', None)
 
                 # If no checksum, then calculate it
                 if not checksum:
-                    checksum = calculate_md5(language, extension_dict['name'], extension_dict['version'])
+                    checksum = calculate_md5(language, ext_name, ext_version)
 
-                extension_dict['options']['checksums'] = [checksum]  
+                # Add checksum to the options
+                ext_options['checksums'] = [checksum]  
             
                 # Get dependencies from the package
-                dependencies = package_info.get('Imports', {})
+                ext_dependencies = package_info.get('Imports', {})
 
             elif language == 'python':
                 raise EasyBuildError("Python not supported yet")
@@ -5386,20 +5362,22 @@ def complete_dependencies(ecs):
                 raise EasyBuildError("Language not supported: %s" % language)
 
             # Append extensions' dependencies to the list
-            if dependencies:
-                for package_name, package_version_constraints in dependencies.items():
+            if ext_dependencies:
+                for package_name, package_version_constraints in ext_dependencies.items():
 
                     # Process version constraints and correct dependency version
                     package_version = process_package_version_constraints(language, package_name, package_version_constraints)
 
                     # Check if the dependency has dependencies
-                    sub_dependency = get_all_dependencies(language, [(package_name, package_version, {})])
+                    sub_dependency = get_all_dependencies(language, [(package_name, package_version, {})], processed)
 
                     # Append those dependencies to the list. They are placed on top of the current extension
                     exts_with_dependencies.extend(sub_dependency)
 
-            extension_dict['dependencies'] = dependencies
-            exts_with_dependencies.append(extension_dict)
+            exts_with_dependencies.append({"name": ext_name,
+                                           "version": ext_version,
+                                           "options": ext_options,
+                                           "dependencies": ext_dependencies})
 
         return exts_with_dependencies
 
@@ -5514,10 +5492,6 @@ def complete_dependencies(ecs):
 
         # Current format of extensions:
         #   [{'name': 'credentials', 'version': '2.0.1', 'options': {...}, 'dependencies':{'openssl':'>= 1.3, ...}}, {...}]
-
-        # Sort the extensions based on their dependencies
-        print_msg("Sorting extensions based on their dependencies...", log=_log)
-        extensions = sort_dependencies(extensions)
 
         # Delete duplicates from the list
         print_msg("Deleting duplicated dependencies...", log=_log)
