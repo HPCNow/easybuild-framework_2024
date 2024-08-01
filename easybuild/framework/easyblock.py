@@ -49,9 +49,12 @@ import json
 import os
 import re
 import stat
+import subprocess
+import tarfile
 import tempfile
 import time
 import traceback
+import zipfile
 import requests
 import hashlib
 from datetime import datetime
@@ -5113,7 +5116,7 @@ def complete_exts_list(ecs):
         elif language == 'perl':
             print_warning("Perl not supported yet. Skipping easyconfig...", log=_log)
         elif language == 'python':
-            print_warning("Python not supported yet. Skipping easyconfig...", log=_log)
+            instance = PythonExtension(ec)
         else:
             print_warning("Language not supported: %s" % language, log=_log)
 
@@ -5358,6 +5361,99 @@ def complete_exts_list(ecs):
 
             return self.exts_list_with_imports
 
+
+    class PythonExtension:
+        def __init__(self, ec):
+            print("PythonExtension")
+            # requirements.txt y setup.py, pero pyproject.toml, Pipfile, y environment.yml
+            self.ec = ec
+
+            self.exts_list = ec.get('ec', {}).get('exts_list', [])
+            self.exts_list_with_imports = []
+
+            self.depend_exclude = ['argparse', 'asyncio', 'typing', 'sys', 'functools32', 'enum34', 'future', 'configparser']
+            # packages = ['argparse', 'asyncio', 'typing', 'sys', 'functools32', 'enum34', 'future', 'configparser']
+
+            # for package in packages:
+            #     spec = importlib.util.find_spec(package)
+            #     if spec is not None and 'site-packages' not in spec.origin:
+            #         print(f"{package} is part of the standard library.")
+            #     else:
+            #         print(f"{package} is not part of the standard library.")
+
+        def get_complete_exts_list(self):
+            """ Get the complete exts list with all dependencies """
+
+            for ext in self.exts_list:
+                ext_name = ext[0]
+                ext_version = ext[1]
+                ext_options = ext[2]
+
+                # self.complete_package_imports(ext_name, ext_version, ext_options)
+                self.download_and_extract(ext_name, ext_version)
+
+            return self.exts_list_with_imports
+
+
+        def download_and_extract(self, package_name, package_version):
+            with tempfile.TemporaryDirectory() as tmpdirname:
+                print(f"Created temporary directory at {tmpdirname}")
+                
+                # Download the package to the temporary directory
+                result = subprocess.run(['pip', 'download', f'{package_name}=={package_version}', '--dest', tmpdirname], capture_output=True, text=True)
+                
+                if result.returncode != 0:
+                    print(f"Failed to download package: {result.stderr}")
+                    return
+                
+                # Find the downloaded file
+                files = [f for f in os.listdir(tmpdirname) if f.startswith(package_name)]
+                if not files:
+                    print(f"No source distribution found for {package_name}=={package_version}")
+                    return
+
+                # Extract the file
+                file_name = files[0]
+                if file_name.endswith('.tar.gz'):
+                    with tarfile.open(file_name, 'r:gz') as tar:
+                        tar.extractall()
+                elif file_name.endswith('.zip'):
+                    with zipfile.ZipFile(file_name, 'r') as zip_ref:
+                        zip_ref.extractall()
+                else:
+                    print(f"Unsupported file format: {file_name}")
+                    return
+
+                # Locate and print the requirements.txt file
+                extracted_dir = file_name.rsplit('.', 2)[0]
+
+                # requirements.txt y setup.py, pero pyproject.toml, Pipfile, y environment.yml
+
+                requirements_file_path = os.path.join(extracted_dir, 'requirements.txt')
+                setup_file_path = os.path.join(extracted_dir, 'setup.py')
+                pyproject_file_path = os.path.join(extracted_dir, 'pyproject.toml')
+                pipfile_file_path = os.path.join(extracted_dir, 'Pipfile')
+                environment_file_path = os.path.join(extracted_dir, 'environment.yml')
+
+
+                if os.path.exists(requirements_file_path):
+                    print("Get requirements.txt")
+                    # with open(req_file_path, 'r') as req_file:
+                    #     print(req_file.read())
+
+                if os.path.exists(setup_file_path):
+                    print("Get setup.py")
+
+                if os.path.exists(pyproject_file_path):
+                    print("Get pyproject.toml")
+
+                if os.path.exists(pipfile_file_path):
+                    print("Get Pipfile")
+                
+                if os.path.exists(environment_file_path):
+                    print("Get environment.yml")
+                    
+
     #
     # COMPLETE EXTS LIST CODE
     #
@@ -5382,7 +5478,7 @@ def complete_exts_list(ecs):
             continue
 
         # Get a complete exts_list
-        print_msg("\nCompleting exts_list for EasyConfig file %s..." % ec['spec'], log=_log)
+        print_msg('\nCompleting exts_list for EasyConfig file "%s"...' % os.path.basename(ec['spec']), log=_log)
         complete_exts_list = extension_instance.get_complete_exts_list()
 
         # Format the extension's dependencies to match EasyConfig format
