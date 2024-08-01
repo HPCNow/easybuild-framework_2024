@@ -819,7 +819,7 @@ class EasyBuildOptions(GeneralOption):
                                        "naming scheme ('log': only log warnings (no printed messages); 'warn': print "
                                        "warnings; 'error': fail with an error)", 'choice', 'store',
                                        LOCAL_VAR_NAMING_CHECK_WARN, LOCAL_VAR_NAMING_CHECKS),
-            'complete-dependencies': ("Add all dependecies and imports of each extesion from easyconfig file", None ,'store_true', False),                           
+            'complete-exts-list': ("Complete the exts_list of an easyconfig file", None ,'store_true', False),                           
         })
         self.log.debug("easyconfig_options: descr %s opts %s" % (descr, opts))
         self.add_group_parser(opts, descr, prefix='')
