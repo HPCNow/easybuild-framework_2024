@@ -50,6 +50,7 @@ import os
 import re
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -4906,14 +4907,13 @@ def complete_exts_list(ecs):
         """
 
         if not exts_list:
-            raise EasyBuildError("Extensions list not specified")
+            print_error("Extensions list not specified", log=_log)
+            return None
 
         # Format the extensions to be written in the EasyConfig file
         exts_list_lines = ['exts_list = [']
 
         for ext in exts_list:
-            if ext['name'] == 'insight':
-                print("here")
             exts_list_lines.append("%s('%s', '%s', {" % (INDENT_4SPACES, ext['name'], ext['version']))
             for key, value in ext['options'].items():
                 if type(value) == str:
@@ -5114,8 +5114,9 @@ def complete_exts_list(ecs):
             print_msg("Detected 'R' language...", log=_log)
             instance = RExtension(ec)
         elif language == 'perl':
-            print_warning("Perl not supported yet. Skipping easyconfig...", log=_log)
+            print_warning("Perl not supported yet.", log=_log)
         elif language == 'python':
+            print_msg("Detected 'Python' language...", log=_log)
             instance = PythonExtension(ec)
         else:
             print_warning("Language not supported: %s" % language, log=_log)
@@ -5275,6 +5276,7 @@ def complete_exts_list(ecs):
             options = package_options
             imports = {}
 
+            # TODO:vmachado: Shall we check for name and version and then keep the lowest version?
             # Skip already processed extensions
             if name in processed:
                 return
@@ -5371,6 +5373,8 @@ def complete_exts_list(ecs):
             self.exts_list = ec.get('ec', {}).get('exts_list', [])
             self.exts_list_with_imports = []
 
+            self.list_of_req_files = ['requirements.txt', 'setup.py', 'setup.cfg', 'pyproject.toml', 'Pipfile', 'environment.yml']
+
             self.depend_exclude = ['argparse', 'asyncio', 'typing', 'sys', 'functools32', 'enum34', 'future', 'configparser']
             # packages = ['argparse', 'asyncio', 'typing', 'sys', 'functools32', 'enum34', 'future', 'configparser']
 
@@ -5378,81 +5382,153 @@ def complete_exts_list(ecs):
             #     spec = importlib.util.find_spec(package)
             #     if spec is not None and 'site-packages' not in spec.origin:
             #         print(f"{package} is part of the standard library.")
-            #     else:
+            #     else:º
             #         print(f"{package} is not part of the standard library.")
 
+
+        def get_pypi_package_info(self, package_name):
+            url = f"https://pypi.org/pypi/{package_name}/json"
+            response = requests.get(url)
+            
+            if response.status_code == 200:
+                package_info = response.json()
+                return package_info
+            else:
+                print_error(f"Failed to get information for package {package_name}", log=_log)
+                return None
+
+        def get_package_checksum(self, package_name, package_version):
+            package_info = self.get_pypi_package_info(package_name)
+            if package_info:
+                releases = package_info.get('releases', {})
+                version_info = releases.get(package_version, [])
+                if version_info:
+                    # Look for sdist first
+                    for file_info in version_info:
+                        if file_info.get('packagetype') == 'sdist':
+                            return file_info.get('digests', {}).get('sha256')
+                    # If no sdist found, take the checksum of the first distribution file
+                    return version_info[0].get('digests', {}).get('sha256')
+            return None
+
+        def complete_package_imports(self, pip_path, package_name, package_version, package_options, processed=[]):
+                
+            # TODO:vmachado: Shall we check for name and version and then keep the lowest version?
+            # Skip already processed extensions
+            if package_name in processed:
+                print_msg("Skipped package %s v%s" % (package_name, package_version), log=_log)
+                return
+            
+            # Add extension as processed
+            processed.append(package_name)
+
+            # Initialize the list of imports
+            package_installs = []
+
+            # Run "pip install --dry-run" and parse output to get dependencies
+            result = subprocess.run([pip_path, 'install', '--dry-run', f"{package_name}=={package_version}"], capture_output=True, text=True)
+            
+            # If fails try to get the latest version
+            if result.returncode != 0:
+                result = subprocess.run([pip_path, 'install', '--dry-run', f"{package_name}"], capture_output=True, text=True)
+            
+            # If fails again we failed to process the package
+            if result.returncode != 0:
+                print_error(f"Failed to get dependencies for package {package_name}=={package_version}")
+                return
+
+            # # Run "conda install --dry-run" and parse output to get dependencies
+            # result = subprocess.run(['conda', 'install', '--dry-run', f"{package_name}={package_version}"], capture_output=True, text=True)
+
+            lines = result.stdout.splitlines()
+            for line in lines:
+                if line.startswith('Would install'):
+                    
+                    # Patter to search for versioned packages
+                    pattern = r'([\w\.-]+)-((\d+!)?\d+(\.\d+)*([abc]\d+)?(\.post\d+)?(\.dev\d+)?(\+\w+(\.\w+)*)?)'
+
+                    # Find all matches in the input string
+                    matches = re.findall(pattern, line)
+                    
+                    # Convert matches to a list of tuples (package, version)
+                    package_installs = [(match[0], match[1]) for match in matches]
+
+            if package_installs:
+                for (import_name, import_version) in package_installs:
+                    # The package we are processing is already in the package_install list. Skip
+                    if import_name.lower() == package_name.lower():
+                        continue
+                    self.complete_package_imports(pip_path, import_name, import_version, {}, processed)
+
+            checksum = self.get_package_checksum(package_name, package_version)
+            package_options['checksums'] = [checksum]
+
+            print_msg("Processed package %s v%s" % (package_name, package_version), log=_log)
+                    
+            self.exts_list_with_imports.append({"name": package_name,
+                                                "version": package_version,
+                                                "options": package_options})
+
+        def pip_supports_dry_run(pip_path):
+            try:
+                result = subprocess.run([pip_path, 'install', '--help'], check=True,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return '--dry-run' in result.stdout.decode()
+            except subprocess.CalledProcessError as e:
+                return False
+    
         def get_complete_exts_list(self):
             """ Get the complete exts list with all dependencies """
 
-            for ext in self.exts_list:
-                ext_name = ext[0]
-                ext_version = ext[1]
-                ext_options = ext[2]
+            # Create a virtual env and use pip install --dry-run to get dependencies
+            with tempfile.TemporaryDirectory() as temp_env:
 
-                # self.complete_package_imports(ext_name, ext_version, ext_options)
-                self.download_and_extract(ext_name, ext_version)
+                # Create the virtual environment
+                try:
+                    subprocess.run([sys.executable, '-m', 'venv', temp_env], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                except subprocess.CalledProcessError as e:
+                    print_error(f"Failed create virtual environment: {e.stderr.decode().strip()}. Python version higher than 3.10 is required", log=_log)
+                    return None
+
+                # Get current pip path
+                pip_path = os.path.join(temp_env, 'bin', 'pip') if os.name != 'nt' else os.path.join(temp_env, 'Scripts', 'pip.exe')
+
+                # Check if current pip version supports --dry-run, else upgrade pip
+                if not self.pip_supports_dry_run(pip_path):
+                    try:
+                        subprocess.run([pip_path, 'install', '--upgrade', 'pip'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    except subprocess.CalledProcessError as e:
+                        print_error(f"Failed to upgrade pip: {e.stderr.decode().strip()}", log=_log)
+                    
+                    if not self.pip_supports_dry_run(pip_path):
+                        print_error("Pip version does not support --dry-run.", log=_log)
+                        return None
+
+                # TODO:vmachado: missing CONDA support
+
+                # # Download Miniconda installer
+                # miniconda_url = "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
+                # miniconda_installer = os.path.join(temp_env, 'miniconda_installer.sh')
+                # urllib.request.urlretrieve(miniconda_url, miniconda_installer)
+
+                # # Install Miniconda
+                # subprocess.run(['bash', miniconda_installer, '-b', '-p', os.path.join(temp_env, 'miniconda')], check=True)
+
+                # # Initialize Conda
+                # conda_path = os.path.join(temp_env, 'miniconda', 'bin', 'conda')
+                # subprocess.run([conda_path, 'init'], check=True)
+
+
+                for ext in self.exts_list:
+                    ext_name = ext[0]
+                    ext_version = ext[1]
+                    ext_options = ext[2]
+
+                    # self.complete_package_imports(ext_name, ext_version, ext_options)
+                    # self.download_and_extract(ext_name, ext_version)
+                    self.complete_package_imports(pip_path, ext_name, ext_version, ext_options)
 
             return self.exts_list_with_imports
-
-
-        def download_and_extract(self, package_name, package_version):
-            with tempfile.TemporaryDirectory() as tmpdirname:
-                print(f"Created temporary directory at {tmpdirname}")
-                
-                # Download the package to the temporary directory
-                result = subprocess.run(['pip', 'download', f'{package_name}=={package_version}', '--dest', tmpdirname], capture_output=True, text=True)
-                
-                if result.returncode != 0:
-                    print(f"Failed to download package: {result.stderr}")
-                    return
-                
-                # Find the downloaded file
-                files = [f for f in os.listdir(tmpdirname) if f.startswith(package_name)]
-                if not files:
-                    print(f"No source distribution found for {package_name}=={package_version}")
-                    return
-
-                # Extract the file
-                file_name = files[0]
-                if file_name.endswith('.tar.gz'):
-                    with tarfile.open(file_name, 'r:gz') as tar:
-                        tar.extractall()
-                elif file_name.endswith('.zip'):
-                    with zipfile.ZipFile(file_name, 'r') as zip_ref:
-                        zip_ref.extractall()
-                else:
-                    print(f"Unsupported file format: {file_name}")
-                    return
-
-                # Locate and print the requirements.txt file
-                extracted_dir = file_name.rsplit('.', 2)[0]
-
-                # requirements.txt y setup.py, pero pyproject.toml, Pipfile, y environment.yml
-
-                requirements_file_path = os.path.join(extracted_dir, 'requirements.txt')
-                setup_file_path = os.path.join(extracted_dir, 'setup.py')
-                pyproject_file_path = os.path.join(extracted_dir, 'pyproject.toml')
-                pipfile_file_path = os.path.join(extracted_dir, 'Pipfile')
-                environment_file_path = os.path.join(extracted_dir, 'environment.yml')
-
-
-                if os.path.exists(requirements_file_path):
-                    print("Get requirements.txt")
-                    # with open(req_file_path, 'r') as req_file:
-                    #     print(req_file.read())
-
-                if os.path.exists(setup_file_path):
-                    print("Get setup.py")
-
-                if os.path.exists(pyproject_file_path):
-                    print("Get pyproject.toml")
-
-                if os.path.exists(pipfile_file_path):
-                    print("Get Pipfile")
-                
-                if os.path.exists(environment_file_path):
-                    print("Get environment.yml")
-                    
 
     #
     # COMPLETE EXTS LIST CODE
@@ -5475,19 +5551,28 @@ def complete_exts_list(ecs):
         # Get the extension instance
         extension_instance = get_extension_instance(ec)
         if not extension_instance:
+            print_error("Failed to complete exts_list for EasyConfig file %s" % os.path.basename(ec['spec']), log=_log)
             continue
 
         # Get a complete exts_list
-        print_msg('\nCompleting exts_list for EasyConfig file "%s"...' % os.path.basename(ec['spec']), log=_log)
+        print_msg('Completing exts_list for EasyConfig file "%s"...' % os.path.basename(ec['spec']), log=_log)
         complete_exts_list = extension_instance.get_complete_exts_list()
 
+        if not complete_exts_list:
+            print_error("Failed to complete exts_list for EasyConfig file %s" % os.path.basename(ec['spec']), log=_log)
+            continue
+
         # Format the extension's dependencies to match EasyConfig format
-        print_msg("\nFormatting new exts_list to match EasyConfig format...", log=_log)
+        print_msg("Formatting new exts_list to match EasyConfig format...", log=_log)
         extensions = format_exts_list(complete_exts_list)
+
+        if not extensions:
+            print_error("Failed to complete exts_list for EasyConfig file %s" % os.path.basename(ec['spec']), log=_log)
+            continue
 
         # Write the new easyconfig file
         output_filename = ec['spec'].replace('.eb', '.completed')
-        print_msg('\nWriting new EasyConfig file...', log=_log)
+        print_msg('Writing new EasyConfig file...', log=_log)
 
         regex = re.compile(r'^exts_list(.|\n)*?\n\]\s*$', re.M)
         ectxt = regex.sub('\n'.join(extensions), read_file(ec['spec']))
