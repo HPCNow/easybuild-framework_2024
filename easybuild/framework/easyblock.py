@@ -4851,6 +4851,13 @@ def complete_exts_list(ecs):
     :param ecs: list of EasyConfig instances to complete dependencies for
     """
 
+    # DEVELOPMENT INSTRUCTIONS
+    #     python3 -m venv .venv
+    #     . .venv/bin/activate
+    #     pip install -r requirements.txt
+    #     pip install easybuild-easyblocks
+    #     pip install -e .
+
     #
     # COMPLETE EXTS LIST FUNCTIONS
     #
