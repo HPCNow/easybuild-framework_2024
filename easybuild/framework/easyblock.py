@@ -4851,7 +4851,15 @@ def complete_exts_list(ecs):
     :param ecs: list of EasyConfig instances to complete dependencies for
     """
 
-    # DEVELOPMENT INSTRUCTIONS
+    # TODO:vmachado: Right now, complete_exts_list only takes the first appearance of a package. 
+    # This means that if the same package appears in multiple extensions, only the first one will be considered.
+    # This could lead to version incompatibilities. We should consider all appearances of a package.
+    #
+    # Improvements: 
+    # We need to consider making a list of dependencies and a dictionary of packages with the package constrainst,
+    # then checking everytime that the packages we have are compatible with the constraints of all the dependencies.
+
+    # DEVELOPMENT INSTALLATION INSTRUCTIONS
     #     python3 -m venv .venv
     #     . .venv/bin/activate
     #     pip install -r requirements.txt
@@ -5287,9 +5295,6 @@ def complete_exts_list(ecs):
             # Skip already processed extensions
             if name in processed:
                 return
-
-            # Add extension as processed
-            processed.append(name)
 
             # Get the package information
             package_info = self.get_package_info(name, version)
