@@ -55,11 +55,14 @@ import tarfile
 import tempfile
 import time
 import traceback
+from typing import List
 import zipfile
 import requests
 import hashlib
 from datetime import datetime
 from html.parser import HTMLParser
+from packaging.version import Version, InvalidVersion
+from packaging.specifiers import SpecifierSet
 
 import easybuild.tools.environment as env
 import easybuild.tools.toolchain as toolchain
@@ -4851,11 +4854,11 @@ def complete_exts_list(ecs):
     :param ecs: list of EasyConfig instances to complete dependencies for
     """
 
-    # TODO:vmachado: Right now, complete_exts_list only takes the first appearance of a package. 
+    # TODO:vmachado: Right now, complete_exts_list only takes the first appearance of a package.
     # This means that if the same package appears in multiple extensions, only the first one will be considered.
     # This could lead to version incompatibilities. We should consider all appearances of a package.
     #
-    # Improvements: 
+    # Improvements:
     # We need to consider making a list of dependencies and a dictionary of packages with the package constrainst,
     # then checking everytime that the packages we have are compatible with the constraints of all the dependencies.
 
@@ -4929,8 +4932,8 @@ def complete_exts_list(ecs):
         exts_list_lines = ['exts_list = [']
 
         for ext in exts_list:
-            exts_list_lines.append("%s('%s', '%s', {" % (INDENT_4SPACES, ext['name'], ext['version']))
-            for key, value in ext['options'].items():
+            exts_list_lines.append("%s('%s', '%s', {" % (INDENT_4SPACES, ext.name, ext.version))
+            for key, value in ext.options.items():
                 if type(value) == str:
                     exts_list_lines.append("%s'%s': '%s'," % (INDENT_4SPACES * 2, key, value))
                 else:
@@ -4941,133 +4944,31 @@ def complete_exts_list(ecs):
 
         return exts_list_lines
 
-    def process_package_version_constraints(extension_instance, package_name, package_version):
+    def get_latest_version(available_versions, version_constraints: List[str]):
         """
-        Get latest package version that satisfies the constraints even if it changes the major version.
-        This way toolchain compilation is less likely to fail.
+        Get the latest version of a package based on version constraints.
 
-        :param extension_instance: instance of the extension (RExtension, PythonExtension, PerlExtension)
-        :param package_name: name of the package to search info for
-        :param package_version_constraints: version of the package to search info for
+        :param available_versions: List of available versions as strings
+        :param version_constraints: Version constraints string
+        :return: Latest version that satisfies the constraints
         """
 
-        if not extension_instance:
-            raise EasyBuildError("Extension instance not specified")
+        # Convert the version constraints to a string
+        version_list_string = ", ".join(version_constraints)
 
-        if not package_name:
-            raise EasyBuildError("Package name not specified")
+        version_list_string = version_list_string.replace('*', '')
+        
+        try:
+            specifier_set = SpecifierSet(version_list_string)
+        except InvalidVersion:
+            raise ValueError("Invalid version constraints")
 
-        if not package_version:
+        valid_versions = [Version(v) for v in available_versions if Version(v) in specifier_set]
+
+        if not valid_versions:
             return None
 
-        # Current selected version. None means we will get latest version
-        version = None
-
-        # List of constraints that are pending to be processed as we need all package's released versions
-        pending_constraints = []
-
-        # Clean the package version string from unwanted chars
-        package_version = clean_version(package_version)
-
-        # Get the version and its constraints
-        constraints = package_version.split()
-
-        i = 0
-        while i < len(constraints):
-            constraint = constraints[i]
-
-            if constraint == '*':
-                # Get the latest version
-                # Discard any other constraints as they are in contradiction with the '*'
-                version = None
-                pending_constraints = []
-                break
-
-            elif constraint == '=':
-                # Get the specified version.
-                # Discard any other constraints as they are in contradiction with the '='
-                version = constraints[i + 1]
-                pending_constraints = []
-                break
-
-            elif constraint == '>':
-                # Get the latest but keep processing for other constraints
-                version = None
-                # Discard the numbers after the symbol
-                i = i + 1
-
-            elif constraint == '>=':
-                # Get the latest but keep processing for other constraints
-                version = None
-                # Discard the numbers after the symbol
-                i = i + 1
-
-            elif constraint == '<=':
-                # Get the specified version
-                # Discard any other constraints as they are in contradiction with the '<='
-                version = constraints[i + 1]
-                pending_constraints = []
-                break
-
-            elif constraint == '<':
-                # To deal with this constraint we need to get all available versions. Process later
-                pending_constraints.append(constraints[i])  # Append constraint
-                pending_constraints.append(constraints[i + 1])  # Append constraint's version
-                i = i + 1  # Discard the version after the symbol
-
-            elif constraint == '!=':
-                # To deal with this constraint we need to get all available versions. Process later
-                pending_constraints.append(constraints[i])  # Append constraint
-                pending_constraints.append(constraints[i + 1])  # Append constraint's version
-                i = i + 1  # Discard the version after the symbol
-
-            else:
-                # There is no version constraint, just the version
-                version = constraint
-
-            # Process next constraint
-            i = i + 1
-
-        # If we have pending constraints it means we have "<" or "!=" constraints
-        if pending_constraints:
-
-            releases = extension_instance.get_all_package_releases(package_name)
-
-            # Iterate backwards over relases to get the latest version that satisfies the constraints
-            for release in reversed(releases):
-
-                # Check if we have pending constraints to be processed.
-                if not pending_constraints:
-                    # No more constraints to process
-                    # Keep the previous found version
-                    break
-
-                else:
-                    if pending_constraints[0] == '<':
-                        lower_version = get_lowest_version(release, pending_constraints[1])
-
-                        if release == lower_version:
-                            version = release
-
-                            # Discard constraint and version as they are fulfilled
-                            pending_constraints.pop(0)
-                            pending_constraints.pop(0)
-
-                    elif pending_constraints[0] == '!=':
-                        if release != pending_constraints[1]:
-                            version = release
-
-                            # Discard constraint and version as they are fulfilled
-                            pending_constraints.pop(0)
-                            pending_constraints.pop(0)
-                    else:
-                        # We should not be here, print warning message and keep the current version
-                        print_warning("Unknown version constraint detected. Package: %s, Version: %s " %
-                                      package_name, package_version, log=_log)
-                        version = release
-                        break
-
-        return version
+        return str(max(valid_versions))
 
     def get_exts_list_language(ec):
         """
@@ -5138,6 +5039,14 @@ def complete_exts_list(ecs):
 
         return instance
 
+    class Package:
+        def __init__(self, name=None, version=None, options={}, imports=[], version_constraints=[]):
+            self.name: str = name
+            self.version: str = version
+            self.options: dict = options
+            self.imports: List[str] = imports
+            self.version_constraints: List[str] = version_constraints
+
     class RExtension:
         """
         Class to complete the extension's dependencies for R packages
@@ -5146,8 +5055,9 @@ def complete_exts_list(ecs):
         def __init__(self, ec):
             self.ec = ec
 
-            self.exts_list = ec.get('ec', {}).get('exts_list', [])
-            self.exts_list_with_imports = []
+            self.exts_list_original = ec.get('ec', {}).get('exts_list', [])
+            self.exts_list: List[Package] = []
+            self.new_exts_list = {}
 
             self.bioconductor_version = self.get_bioconductor_version(ec)
             self.bioc_packages = {}
@@ -5284,43 +5194,82 @@ def complete_exts_list(ecs):
             # Package not found
             return None
 
-        def complete_package_imports(self, package_name, package_version, package_options, processed=[]):
+        def complete_package_imports(self, package: Package):
 
-            name = package_name
-            version = package_version
-            options = package_options
-            imports = {}
+            # Get the available versions of the package
+            available_versions = self.get_all_package_releases(package.name)
 
-            # TODO:vmachado: Shall we check for name and version and then keep the lowest version?
-            # Skip already processed extensions
-            if name in processed:
-                return
+            # Clean the package version from unwanted characters like '\n'
+            package.version = clean_version(package.version)
+
+            # If package version is literal, then format it to be a version constraint
+            if all(c.isdigit() or c == '.' for c in package.version):
+                package.version = f'=={package.version}'
+                
+            # Get the latest version of the package that satisfies the package version constraints
+            version = get_latest_version(available_versions, [package.version])
+
+            # Flag to check if the package has already been processed
+            is_package_already_processed = False
+
+            # Check if the package has already been processed and if the version or version constraints are different
+            for pkg in self.exts_list:
+
+                # Check if the package has already been processed
+                if pkg.name == package.name:
+
+                    # Mark the package as already processed
+                    is_package_already_processed = True
+
+                    # Check if this version constraint has been already processed
+                    if package.version not in pkg.version_constraints:
+
+                        # Append version constraint to the list
+                        pkg.version_constraints.append(package.version)    
+
+                        # Get the final version from the all version constraints
+                        version = get_latest_version(self.get_all_package_releases(
+                            package.name), pkg.version_constraints)
+
+                        # Check if the current version is the same as the processed version. If so, do nothing
+                        if version == pkg.version:
+                            return
+
+                    else:
+                        # Version constraint already in the version_constraints list. Therefore, already processed
+                        return
+
+                    # We found the package, break the loop
+                    break
 
             # Get the package information
-            package_info = self.get_package_info(name, version)
+            package_info = self.get_package_info(package.name, version)
 
             # If there is not package_info then skip the package
-            # This package is most likely to be already installed by default by the toolchain or dependencies
             if not package_info:
-                print_msg("Skipped package %s" % (name), log=_log)
+                print_msg("No info found for package %s. Skipping..." % (package.name), log=_log)
                 return
+
+            # Get the package name from database package info
+            name = package_info.get('Package')
 
             # Get version from database package info
             version = package_info.get('Version')
 
             # Get the checksum from database package info
+            options = package.options
             checksum = package_info.get('MD5sum', None)
             if checksum:
                 options['checksums'] = [checksum.replace('\n', '')]
 
             # Get imports from the package
-            package_imports = package_info.get('Imports', {})
-            if package_imports:
-                if isinstance(package_imports, list):
-                    package_imports = {item: '*' for item in package_imports}
-                imports.update(package_imports)
+            imports = package_info.get('Imports', {})
+            if imports:
+                if isinstance(imports, list):
+                    imports = {item: '*' for item in imports}
+                imports.update(imports)
 
-            # Get suggests from the package
+            # Get depends from the package
             package_depends = package_info.get('Depends', {})
             if package_depends:
                 if isinstance(package_depends, list):
@@ -5334,9 +5283,10 @@ def complete_exts_list(ecs):
                     package_linkingTo = {item: '*' for item in package_linkingTo}
                 imports.update(package_linkingTo)
 
+            # Process the imports
             if imports:
                 for (import_name, import_version) in imports.items():
-                    # Regular expression pattern to match 'RSQLite (>= 2.0)'
+                    # Regular expression pattern to match versions like 'RSQLite (>= 2.0)'
                     pattern = r'^(?P<name>[^\s]+) \((?P<info>.+)\)$'
                     match = re.match(pattern, import_name)
 
@@ -5344,37 +5294,43 @@ def complete_exts_list(ecs):
                         import_name = match.group('name')
                         import_version = match.group('info')
 
-                    # Skip dependencies that are already in the list
+                    # Skip dependencies that are already in the exclude set
                     if import_name in self.depend_exclude:
                         continue
 
-                    # Process version constraints and correct dependency version
-                    import_version = process_package_version_constraints(
-                        self, import_name, import_version)
-
+                    pkg = Package(name=import_name, version=import_version, options={}, imports={})
                     # Call this function recursively to get the dependencies of the dependencies
-                    self.complete_package_imports(import_name, import_version, {})
+                    self.complete_package_imports(pkg)
 
-            print_msg("Processed package %s v%s" % (name, version), log=_log)
 
-            # Append processed extension to the list
-            self.exts_list_with_imports.append({"name": name,
-                                                "version": version,
-                                                "options": options,
-                                                "imports": imports})
+            print_msg("Processed package %s v%s" % (package.name, version), log=_log)
+
+            if is_package_already_processed:
+                # Package already processed and version changed. Update the version, the imports and the options
+                for pkg in self.exts_list:
+                    if pkg.name == package.name:
+                        pkg.version = version
+                        pkg.options = options
+                        pkg.imports = imports
+                        # pkg.version_constraints already processed
+
+                        # We found the package, break the loop
+                        break
+
+            else:
+                pkg = Package(name=name, version=version, options=options,
+                                imports=imports, version_constraints=[package.version])
+                # Append processed extension to the list
+                self.exts_list.append(pkg)
 
         def get_complete_exts_list(self):
             """ Get the complete exts list with all dependencies """
 
-            for ext in self.exts_list:
-                ext_name = ext[0]
-                ext_version = ext[1]
-                ext_options = ext[2]
+            for ext in self.exts_list_original:
+                package = Package(name=ext[0], version=ext[1], options=ext[2])
+                self.complete_package_imports(package)
 
-                self.complete_package_imports(ext_name, ext_version, ext_options)
-
-            return self.exts_list_with_imports
-
+            return self.exts_list
 
     class PythonExtension:
         def __init__(self, ec):
@@ -5385,9 +5341,11 @@ def complete_exts_list(ecs):
             self.exts_list = ec.get('ec', {}).get('exts_list', [])
             self.exts_list_with_imports = []
 
-            self.list_of_req_files = ['requirements.txt', 'setup.py', 'setup.cfg', 'pyproject.toml', 'Pipfile', 'environment.yml']
+            self.list_of_req_files = ['requirements.txt', 'setup.py',
+                                      'setup.cfg', 'pyproject.toml', 'Pipfile', 'environment.yml']
 
-            self.depend_exclude = ['argparse', 'asyncio', 'typing', 'sys', 'functools32', 'enum34', 'future', 'configparser']
+            self.depend_exclude = ['argparse', 'asyncio', 'typing',
+                                   'sys', 'functools32', 'enum34', 'future', 'configparser']
             # packages = ['argparse', 'asyncio', 'typing', 'sys', 'functools32', 'enum34', 'future', 'configparser']
 
             # for package in packages:
@@ -5397,11 +5355,10 @@ def complete_exts_list(ecs):
             #     else:º
             #         print(f"{package} is not part of the standard library.")
 
-
         def get_pypi_package_info(self, package_name):
             url = f"https://pypi.org/pypi/{package_name}/json"
             response = requests.get(url)
-            
+
             if response.status_code == 200:
                 package_info = response.json()
                 return package_info
@@ -5424,13 +5381,13 @@ def complete_exts_list(ecs):
             return None
 
         def complete_package_imports(self, pip_path, package_name, package_version, package_options, processed=[]):
-                
+
             # TODO:vmachado: Shall we check for name and version and then keep the lowest version?
             # Skip already processed extensions
             if package_name in processed:
                 print_msg("Skipped package %s v%s" % (package_name, package_version), log=_log)
                 return
-            
+
             # Add extension as processed
             processed.append(package_name)
 
@@ -5438,12 +5395,14 @@ def complete_exts_list(ecs):
             package_installs = []
 
             # Run "pip install --dry-run" and parse output to get dependencies
-            result = subprocess.run([pip_path, 'install', '--dry-run', f"{package_name}=={package_version}"], capture_output=True, text=True)
-            
+            result = subprocess.run([pip_path, 'install', '--dry-run',
+                                    f"{package_name}=={package_version}"], capture_output=True, text=True)
+
             # If fails try to get the latest version
             if result.returncode != 0:
-                result = subprocess.run([pip_path, 'install', '--dry-run', f"{package_name}"], capture_output=True, text=True)
-            
+                result = subprocess.run([pip_path, 'install', '--dry-run',
+                                        f"{package_name}"], capture_output=True, text=True)
+
             # If fails again we failed to process the package
             if result.returncode != 0:
                 print_error(f"Failed to get dependencies for package {package_name}=={package_version}")
@@ -5455,13 +5414,13 @@ def complete_exts_list(ecs):
             lines = result.stdout.splitlines()
             for line in lines:
                 if line.startswith('Would install'):
-                    
+
                     # Patter to search for versioned packages
                     pattern = r'([\w\.-]+)-((\d+!)?\d+(\.\d+)*([abc]\d+)?(\.post\d+)?(\.dev\d+)?(\+\w+(\.\w+)*)?)'
 
                     # Find all matches in the input string
                     matches = re.findall(pattern, line)
-                    
+
                     # Convert matches to a list of tuples (package, version)
                     package_installs = [(match[0], match[1]) for match in matches]
 
@@ -5476,7 +5435,7 @@ def complete_exts_list(ecs):
             package_options['checksums'] = [checksum]
 
             print_msg("Processed package %s v%s" % (package_name, package_version), log=_log)
-                    
+
             self.exts_list_with_imports.append({"name": package_name,
                                                 "version": package_version,
                                                 "options": package_options})
@@ -5488,7 +5447,7 @@ def complete_exts_list(ecs):
                 return '--dry-run' in result.stdout.decode()
             except subprocess.CalledProcessError as e:
                 return False
-    
+
         def get_complete_exts_list(self):
             """ Get the complete exts list with all dependencies """
 
@@ -5497,21 +5456,25 @@ def complete_exts_list(ecs):
 
                 # Create the virtual environment
                 try:
-                    subprocess.run([sys.executable, '-m', 'venv', temp_env], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    subprocess.run([sys.executable, '-m', 'venv', temp_env], check=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 except subprocess.CalledProcessError as e:
-                    print_error(f"Failed create virtual environment: {e.stderr.decode().strip()}. Python version higher than 3.10 is required", log=_log)
+                    print_error(
+                        f"Failed create virtual environment: {e.stderr.decode().strip()}. Python version higher than 3.10 is required", log=_log)
                     return None
 
                 # Get current pip path
-                pip_path = os.path.join(temp_env, 'bin', 'pip') if os.name != 'nt' else os.path.join(temp_env, 'Scripts', 'pip.exe')
+                pip_path = os.path.join(temp_env, 'bin', 'pip') if os.name != 'nt' else os.path.join(
+                    temp_env, 'Scripts', 'pip.exe')
 
                 # Check if current pip version supports --dry-run, else upgrade pip
                 if not self.pip_supports_dry_run(pip_path):
                     try:
-                        subprocess.run([pip_path, 'install', '--upgrade', 'pip'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        subprocess.run([pip_path, 'install', '--upgrade', 'pip'], check=True,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     except subprocess.CalledProcessError as e:
                         print_error(f"Failed to upgrade pip: {e.stderr.decode().strip()}", log=_log)
-                    
+
                     if not self.pip_supports_dry_run(pip_path):
                         print_error("Pip version does not support --dry-run.", log=_log)
                         return None
@@ -5529,7 +5492,6 @@ def complete_exts_list(ecs):
                 # # Initialize Conda
                 # conda_path = os.path.join(temp_env, 'miniconda', 'bin', 'conda')
                 # subprocess.run([conda_path, 'init'], check=True)
-
 
                 for ext in self.exts_list:
                     ext_name = ext[0]

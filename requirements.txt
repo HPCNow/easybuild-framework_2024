@@ -35,3 +35,5 @@ cryptography; python_version >= '3.5' and python_version < '3.11'
 
 # rich is only supported for Python 3.6+
 rich; python_version >= '3.6'
+
+packaging
