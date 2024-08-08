@@ -4871,12 +4871,13 @@ def complete_exts_list(ecs):
         Class to define a package with its dependencies
         """
 
-        def __init__(self, name=None, version=None, options={}, imports=[], version_constraints=[]):
+        def __init__(self, name=None, version=None, options={}, imports=[], version_constraints=[], original=False):
             self.name: str = name
             self.version: str = version
             self.options: dict = options
             self.imports: List[str] = imports
             self.version_constraints: List[str] = version_constraints
+            self.original = original
 
     class RExtension:
         """
@@ -5142,7 +5143,6 @@ def complete_exts_list(ecs):
                     # Call this function recursively to get the dependencies of the dependencies
                     self.complete_package_imports(pkg)
 
-
             print_msg("Processed package %s v%s" % (package.name, version), log=_log)
 
             if is_package_already_processed:
@@ -5165,37 +5165,115 @@ def complete_exts_list(ecs):
 
         def get_complete_exts_list(self):
             """ Get the complete exts list with all dependencies """
-
-            for ext in self.exts_list_original:
-                package = Package(name=ext[0], version=ext[1], options=ext[2])
-                self.complete_package_imports(package)
-
-            return self.exts_list
+            try:
+                for ext in self.exts_list_original:
+                    package = Package(name=ext[0], version=ext[1], options=ext[2], original=True)
+                    self.complete_package_imports(package)
+                return self.exts_list
+            except Exception as e:
+                print_error(f"Failed to get complete exts list: {e}", log=_log)
+                return None
+            
 
     class PythonExtension:
         def __init__(self, ec):
-            print("PythonExtension")
-            # requirements.txt y setup.py, pero pyproject.toml, Pipfile, y environment.yml
+
             self.ec = ec
 
-            self.exts_list = ec.get('ec', {}).get('exts_list', [])
-            self.exts_list_with_imports = []
+            self.exts_list_original = ec.get('ec', {}).get('exts_list', [])
+            self.exts_list: List[Package] = []
 
-            self.list_of_req_files = ['requirements.txt', 'setup.py',
-                                      'setup.cfg', 'pyproject.toml', 'Pipfile', 'environment.yml']
+            self.pip_path = None
 
-            self.depend_exclude = ['argparse', 'asyncio', 'typing',
-                                   'sys', 'functools32', 'enum34', 'future', 'configparser']
-            # packages = ['argparse', 'asyncio', 'typing', 'sys', 'functools32', 'enum34', 'future', 'configparser']
+        def create_virtual_env(self, temp_env):
+            """
+            Create a virtual environment in the given path
+            
+            :param temp_env: the path to create the virtual environment
+            """
 
-            # for package in packages:
-            #     spec = importlib.util.find_spec(package)
-            #     if spec is not None and 'site-packages' not in spec.origin:
-            #         print(f"{package} is part of the standard library.")
-            #     else:º
-            #         print(f"{package} is not part of the standard library.")
+            try:
+                subprocess.run([sys.executable, '-m', 'venv', temp_env], check=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except subprocess.CalledProcessError as e:
+                print_error(
+                    f"Failed create virtual environment: {e.stderr.decode().strip()}.", log=_log)
+                return False
+            
+            return True
+
+
+        def get_package_imports(self, package: Package):
+            """
+            Get the imports of the given package
+            It will return all the packages that will be installed (including itself)
+
+            :param package: the package to get the imports for
+            """
+
+            result = None
+            
+            # Run "pip install --dry-run" and parse output to get dependencies
+            try:
+                result = subprocess.run([self.pip_path, 'install', '--dry-run', f"{package.name}=={package.version}"],
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE,
+                                    text=True, 
+                                    check=True)
+            except SystemExit as e:
+                print_msg(f"Warning: SystemExit exception detected. Failed to get dependencies for {package.name}=={package.version}", log=_log)
+            except subprocess.CalledProcessError as e:
+                print_msg(f"Warning: Subprocess exception detected. Failed to get dependencies for {package.name}=={package.version}", log=_log)
+            except Exception as e:
+                print_msg(f"Warning: Unexpected exception detected. Failed to get dependencies for {package.name}=={package.version}", log=_log)
+                
+            if not result:
+                print_msg(f"We will try to get the latest version of the package.", log=_log)
+
+                try:
+                    result = subprocess.run([self.pip_path, 'install', '--dry-run',f"{package.name}"],                            
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE,
+                                        text=True, 
+                                        check=True)
+                except SystemExit as e:
+                    print_error(f"Warning: SystemExit exception detected.", log=_log)
+                except subprocess.CalledProcessError as e:
+                    print_error(f"Warning: Subprocess exception detected: {e.stderr.strip()}.", log=_log)
+                except Exception as e:
+                    print_error(f"Warning: Unexpected exception detected: {e.stderr.strip()}.", log=_log)
+                 
+                if not result:
+                    return None
+
+            package_installs = None
+
+            # Parse the output to get the dependencies
+            lines = result.stdout.splitlines()
+            for line in lines:
+                if line.startswith('Would install'):
+                    # Patter to search for versioned packages
+                    pattern = r'([\w\.-]+)-((\d+!)?\d+(\.\d+)*([abc]\d+)?(\.post\d+)?(\.dev\d+)?(\+\w+(\.\w+)*)?)'
+
+                    # Find all matches in the input string
+                    matches = re.findall(pattern, line)
+
+                    # Convert matches to a list of tuples (package, version)
+                    package_installs = [(match[0], match[1]) for match in matches]
+
+                    # We found the line, break the loop
+                    break
+
+            return package_installs
 
         def get_pypi_package_info(self, package_name):
+            """
+            Get the package information from PyPI
+            
+            :param package_name: the name of the package to get the information for
+            """
+
+            # PyPi API URL
             url = f"https://pypi.org/pypi/{package_name}/json"
             response = requests.get(url)
 
@@ -5206,143 +5284,158 @@ def complete_exts_list(ecs):
                 print_error(f"Failed to get information for package {package_name}", log=_log)
                 return None
 
-        def get_package_checksum(self, package_name, package_version):
-            package_info = self.get_pypi_package_info(package_name)
+        def get_package_checksum(self, package: Package ):
+            """
+            Get the checksum of the given package
+            
+            :param package: the package to get the checksum for
+            """
+            
+            # Initialize return value
+            checksum = None
+
+            # Get package info from PyPi database
+            package_info = self.get_pypi_package_info(package.name)
+
             if package_info:
                 releases = package_info.get('releases', {})
-                version_info = releases.get(package_version, [])
+                version_info = releases.get(package.version, [])
+
                 if version_info:
                     # Look for sdist first
                     for file_info in version_info:
                         if file_info.get('packagetype') == 'sdist':
-                            return file_info.get('digests', {}).get('sha256')
+                            checksum =  file_info.get('digests', {}).get('sha256', None)
+                        
                     # If no sdist found, take the checksum of the first distribution file
-                    return version_info[0].get('digests', {}).get('sha256')
-            return None
+                    if not checksum:
+                        checksum = version_info[0].get('digests', {}).get('sha256', None)
+                
+            return checksum
 
-        def complete_package_imports(self, pip_path, package_name, package_version, package_options, processed=[]):
+        def complete_package_imports(self, package: Package):
+            """
+            Complete the package imports of the given package
+            It will iterate over all the dependencies and get dependencies of the dependencies
 
-            # TODO:vmachado: Shall we check for name and version and then keep the lowest version?
-            # Skip already processed extensions
-            if package_name in processed:
-                print_msg("Skipped package %s v%s" % (package_name, package_version), log=_log)
-                return
+            :param package: the package to complete the imports for
+            """
 
-            # Add extension as processed
-            processed.append(package_name)
+            # Check if package has already been processed.
+            # As we are not checking the version constraints directly we cannot guarantee
+            # there won't be a package with the same name but different version constraints
+            # My idea was to call get_package_imports with a huge string with all packages
+            # but subprocess buffer cannot handle such large string. Any ideas on how to solve this?
+            for pkg in self.exts_list:
+                if pkg.name == package.name:
+                    return
+            
+            # Get the package imports
+            imports = self.get_package_imports(package)
 
-            # Initialize the list of imports
-            package_installs = []
+            # Make sure loop does not crash if no imports are found
+            if imports is None:
+                imports = []
 
-            # Run "pip install --dry-run" and parse output to get dependencies
-            result = subprocess.run([pip_path, 'install', '--dry-run',
-                                    f"{package_name}=={package_version}"], capture_output=True, text=True)
+            # Process package imports
+            # NOTE: pip install --dry-run returns the package in the list of packages to be installed
+            for import_name, import_version in imports:
 
-            # If fails try to get the latest version
-            if result.returncode != 0:
-                result = subprocess.run([pip_path, 'install', '--dry-run',
-                                        f"{package_name}"], capture_output=True, text=True)
+                if import_name == package.name:
+                    # Asure version from PyPi database
+                    package.version = import_version
 
-            # If fails again we failed to process the package
-            if result.returncode != 0:
-                print_error(f"Failed to get dependencies for package {package_name}=={package_version}")
-                return
+                    # Get the checksum of the package
+                    checksum = self.get_package_checksum(package)
+                    package.options['checksums'] = [checksum]
 
-            # # Run "conda install --dry-run" and parse output to get dependencies
-            # result = subprocess.run(['conda', 'install', '--dry-run', f"{package_name}={package_version}"], capture_output=True, text=True)
+                else:
+                    # Process the imports
+                    import_pkg = Package(name=import_name, version=import_version, options={})
+                    self.complete_package_imports(import_pkg)
 
-            lines = result.stdout.splitlines()
-            for line in lines:
-                if line.startswith('Would install'):
+            print_msg(f"Processed package {package.name} v{package.version}", log=_log)
 
-                    # Patter to search for versioned packages
-                    pattern = r'([\w\.-]+)-((\d+!)?\d+(\.\d+)*([abc]\d+)?(\.post\d+)?(\.dev\d+)?(\+\w+(\.\w+)*)?)'
+            # Append processed extension to the list
+            self.exts_list.append(package)
+    
+        def upgrade_pip(self):
+            """
+            Upgrade pip to the latest version
+            """
 
-                    # Find all matches in the input string
-                    matches = re.findall(pattern, line)
-
-                    # Convert matches to a list of tuples (package, version)
-                    package_installs = [(match[0], match[1]) for match in matches]
-
-            if package_installs:
-                for (import_name, import_version) in package_installs:
-                    # The package we are processing is already in the package_install list. Skip
-                    if import_name.lower() == package_name.lower():
-                        continue
-                    self.complete_package_imports(pip_path, import_name, import_version, {}, processed)
-
-            checksum = self.get_package_checksum(package_name, package_version)
-            package_options['checksums'] = [checksum]
-
-            print_msg("Processed package %s v%s" % (package_name, package_version), log=_log)
-
-            self.exts_list_with_imports.append({"name": package_name,
-                                                "version": package_version,
-                                                "options": package_options})
-
-        def pip_supports_dry_run(pip_path):
             try:
-                result = subprocess.run([pip_path, 'install', '--help'], check=True,
-                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run([self.pip_path, 'install', '--upgrade', 'pip'],
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                check=True)
+            except subprocess.CalledProcessError as e:
+                print_error(f"Failed to upgrade pip: {e.stderr.decode().strip()}.", log=_log)
+                return False
+            
+            return True
+
+        def pip_supports_dry_run(self):
+            """
+            Check if the current pip version supports --dry-run
+            """
+
+            try:
+                result = subprocess.run([self.pip_path, 'install', '--help'], check=True,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 return '--dry-run' in result.stdout.decode()
             except subprocess.CalledProcessError as e:
+                print_error(f"Failed to check if pip supports --dry-run: {e.stderr.decode().strip()}.", log=_log)
                 return False
 
-        def get_complete_exts_list(self):
-            """ Get the complete exts list with all dependencies """
+        def get_pip_version(self):
+            """
+            Get the current pip version
+            """
 
-            # Create a virtual env and use pip install --dry-run to get dependencies
+            try:
+                result = subprocess.run([self.pip_path, '--version'], check=True,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                return result.stdout.decode().strip()
+            except subprocess.CalledProcessError as e:
+                print_error(f"Failed to get pip version: {e.stderr.decode().strip()}.", log=_log)
+                return None
+
+        def get_complete_exts_list(self):
+            """
+            Get the complete exts list with all dependencies
+            """
+
+            # Create a virtual env and use "pip install --dry-run <packages>"" to get dependencies
             with tempfile.TemporaryDirectory() as temp_env:
 
-                # Create the virtual environment
-                try:
-                    subprocess.run([sys.executable, '-m', 'venv', temp_env], check=True,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                except subprocess.CalledProcessError as e:
-                    print_error(
-                        f"Failed create virtual environment: {e.stderr.decode().strip()}. Python version higher than 3.10 is required", log=_log)
+                print_msg(f"Creating virtual environment in {temp_env}...", log=_log)
+                if not self.create_virtual_env(temp_env):
                     return None
-
-                # Get current pip path
-                pip_path = os.path.join(temp_env, 'bin', 'pip') if os.name != 'nt' else os.path.join(
-                    temp_env, 'Scripts', 'pip.exe')
+                
+                # Get venv pip path
+                self.pip_path = os.path.join(temp_env, 'bin', 'pip')
 
                 # Check if current pip version supports --dry-run, else upgrade pip
-                if not self.pip_supports_dry_run(pip_path):
-                    try:
-                        subprocess.run([pip_path, 'install', '--upgrade', 'pip'], check=True,
-                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    except subprocess.CalledProcessError as e:
-                        print_error(f"Failed to upgrade pip: {e.stderr.decode().strip()}", log=_log)
+                if not self.pip_supports_dry_run():
 
-                    if not self.pip_supports_dry_run(pip_path):
-                        print_error("Pip version does not support --dry-run.", log=_log)
+                    print_msg("%s does not support --dry-run. Upgrading pip..." % (self.get_pip_version()), log=_log)
+
+                    if self.upgrade_pip():
+                        print_msg("pip upgraded successfully: %s" % (self.get_pip_version()), log=_log)
+                    else:
+                        return None
+                    
+                    if not self.pip_supports_dry_run():
+                        print_error("pip version does not support --dry-run.", log=_log)
                         return None
 
-                # TODO:vmachado: missing CONDA support
+                # Process all the extensions
+                for ext in self.exts_list_original:
+                    package = Package(name=ext[0], version=ext[1], options=ext[2], original=True)
+                    self.complete_package_imports(package)
 
-                # # Download Miniconda installer
-                # miniconda_url = "https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh"
-                # miniconda_installer = os.path.join(temp_env, 'miniconda_installer.sh')
-                # urllib.request.urlretrieve(miniconda_url, miniconda_installer)
-
-                # # Install Miniconda
-                # subprocess.run(['bash', miniconda_installer, '-b', '-p', os.path.join(temp_env, 'miniconda')], check=True)
-
-                # # Initialize Conda
-                # conda_path = os.path.join(temp_env, 'miniconda', 'bin', 'conda')
-                # subprocess.run([conda_path, 'init'], check=True)
-
-                for ext in self.exts_list:
-                    ext_name = ext[0]
-                    ext_version = ext[1]
-                    ext_options = ext[2]
-
-                    # self.complete_package_imports(ext_name, ext_version, ext_options)
-                    # self.download_and_extract(ext_name, ext_version)
-                    self.complete_package_imports(pip_path, ext_name, ext_version, ext_options)
-
-            return self.exts_list_with_imports
+            return self.exts_list
 
     def clean_version(version):
         """
