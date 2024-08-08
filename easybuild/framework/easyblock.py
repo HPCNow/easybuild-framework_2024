@@ -4854,15 +4854,8 @@ def complete_exts_list(ecs):
     :param ecs: list of EasyConfig instances to complete dependencies for
     """
 
-    # TODO:vmachado: Right now, complete_exts_list only takes the first appearance of a package.
-    # This means that if the same package appears in multiple extensions, only the first one will be considered.
-    # This could lead to version incompatibilities. We should consider all appearances of a package.
-    #
-    # Improvements:
-    # We need to consider making a list of dependencies and a dictionary of packages with the package constrainst,
-    # then checking everytime that the packages we have are compatible with the constraints of all the dependencies.
+    # DEVELOPMENT INSTALLATION INSTRUCTIONS:
 
-    # DEVELOPMENT INSTALLATION INSTRUCTIONS
     #     python3 -m venv .venv
     #     . .venv/bin/activate
     #     pip install -r requirements.txt
@@ -4873,173 +4866,11 @@ def complete_exts_list(ecs):
     # COMPLETE EXTS LIST FUNCTIONS
     #
 
-    def get_lowest_version(version1, version2):
-        """
-        Get the lowest version of two versions.
-
-        If one of the versions is None, the other version is returned.
-        If both versions are None, None is returned.
-        If both versions are equal, None is returned
-
-        :param version1: version to compare
-        :param version2: version to compare against
-        """
-
-        if version1 is None:
-            return version2
-
-        if version2 is None:
-            return version1
-
-        v1 = tuple(map(int, re.split(r'[.-]', version1)))
-        v2 = tuple(map(int, re.split(r'[.-]', version2)))
-
-        if v1 < v2:
-            return version1
-        elif v2 < v1:
-            return version2
-        else:
-            return None
-
-    def clean_version(version):
-        """
-        Clean the version string from unwanted characters
-
-        :param version: version string to clean
-        """
-
-        if not version:
-            return None
-
-        # Allowed characters in package_version
-        allowed_chars = r'[^0-9><=!*. \-]'
-
-        # Delete all characters that are not allowed
-        return re.sub(allowed_chars, '', version)
-
-    def format_exts_list(exts_list):
-        """
-        Format the extensions list to match easyconfig standards
-
-        :param exts_list: extensions list to be formated
-        """
-
-        if not exts_list:
-            print_error("Extensions list not specified", log=_log)
-            return None
-
-        # Format the extensions to be written in the EasyConfig file
-        exts_list_lines = ['exts_list = [']
-
-        for ext in exts_list:
-            exts_list_lines.append("%s('%s', '%s', {" % (INDENT_4SPACES, ext.name, ext.version))
-            for key, value in ext.options.items():
-                if type(value) == str:
-                    exts_list_lines.append("%s'%s': '%s'," % (INDENT_4SPACES * 2, key, value))
-                else:
-                    exts_list_lines.append("%s'%s': %s," % (INDENT_4SPACES * 2, key, value))
-            exts_list_lines.append('%s}),' % (INDENT_4SPACES,))
-
-        exts_list_lines.append(']\n')
-
-        return exts_list_lines
-
-    def get_latest_version(available_versions, version_constraints: List[str]):
-        """
-        Get the latest version of a package based on version constraints.
-
-        :param available_versions: List of available versions as strings
-        :param version_constraints: Version constraints string
-        :return: Latest version that satisfies the constraints
-        """
-
-        # Convert the version constraints to a string
-        version_list_string = ", ".join(version_constraints)
-
-        version_list_string = version_list_string.replace('*', '')
-        
-        try:
-            specifier_set = SpecifierSet(version_list_string)
-        except InvalidVersion:
-            raise ValueError("Invalid version constraints")
-
-        valid_versions = [Version(v) for v in available_versions if Version(v) in specifier_set]
-
-        if not valid_versions:
-            return None
-
-        return str(max(valid_versions))
-
-    def get_exts_list_language(ec):
-        """
-        Get the language of the extension
-
-        :param ec: EasyConfig instance to get the language from
-        """
-
-        # Check exts_defaultclass
-        exts_defaultclass = ec.get('ec', {}).get('exts_defaultclass', '')
-        if exts_defaultclass:
-            if exts_defaultclass.lower() in ['pythonpackage', 'pythonextension']:
-                return 'python'
-            elif exts_defaultclass.lower() in ['perlmodule', 'perlextension']:
-                return 'perl'
-            elif exts_defaultclass.lower() in ['rpackage', 'rextension']:
-                return 'r'
-
-        # Check specific EasyBlock parameters
-        easyblock = ec.get('ec', {}).get('easyblock', '')
-        if easyblock:
-            if easyblock.lower() in ['pythonpackage', 'pythonextension', 'pythonbundle']:
-                return 'python'
-            elif easyblock.lower() in ['perlmodule', 'perlextension', 'perlbundle']:
-                return 'perl'
-            elif easyblock.lower() in ['rpackage', 'rextension', 'rbundle']:
-                return 'r'
-
-        # Check toolchain
-        toolchain = ec.get('ec', {}).get('toolchain', {}).get('name', '')
-        if toolchain:
-            if toolchain.lower() in ['python', 'python3', 'pythontoolchain']:
-                return 'python'
-            elif toolchain.lower() in ['perl', 'perltoolchain']:
-                return 'perl'
-            elif toolchain.lower() in ['r', 'rtoolchain']:
-                return 'r'
-
-        # Check dependencies
-        dependencies = ec.get('ec', {}).get('dependencies', [])
-        for dep in dependencies:
-            dep_name = dep.get('name', '').lower()
-            if 'python' in dep_name:
-                return 'python'
-            elif 'perl' in dep_name:
-                return 'perl'
-            elif 'r' in dep_name:
-                return 'r'
-
-        return None
-
-    def get_extension_instance(ec):
-
-        instance = None
-
-        language = get_exts_list_language(ec)
-
-        if language == 'r':
-            print_msg("Detected 'R' language...", log=_log)
-            instance = RExtension(ec)
-        elif language == 'perl':
-            print_warning("Perl not supported yet.", log=_log)
-        elif language == 'python':
-            print_msg("Detected 'Python' language...", log=_log)
-            instance = PythonExtension(ec)
-        else:
-            print_warning("Language not supported: %s" % language, log=_log)
-
-        return instance
-
     class Package:
+        """
+        Class to define a package with its dependencies
+        """
+
         def __init__(self, name=None, version=None, options={}, imports=[], version_constraints=[]):
             self.name: str = name
             self.version: str = version
@@ -5057,12 +4888,13 @@ def complete_exts_list(ecs):
 
             self.exts_list_original = ec.get('ec', {}).get('exts_list', [])
             self.exts_list: List[Package] = []
-            self.new_exts_list = {}
 
             self.bioconductor_version = self.get_bioconductor_version(ec)
             self.bioc_packages = {}
 
             self.cran_url = "http://crandb.r-pkg.org"
+            self.cran_archive_url = "https://cran.r-project.org/src/contrib/Archive"
+
             self.base_bioc_url = 'https://bioconductor.org/packages/json/%s' % self.bioconductor_version
             self.bioc_urls = ['%s/bioc/packages.json' % self.base_bioc_url,
                               '%s/data/annotation/packages.json' % self.base_bioc_url,
@@ -5071,17 +4903,22 @@ def complete_exts_list(ecs):
             self.depend_exclude = ['R', 'base', 'compiler', 'datasets', 'graphics',
                                    'grDevices', 'grid', 'methods', 'parallel',
                                    'splines', 'stats', 'stats4', 'tcltk', 'tools',
-                                   'utils', ]
+                                   'utils', 'MASS']
 
-        def get_all_package_releases(self, package_name):
+        def get_all_releases(self, package: Package):
             """
             Get all releases of the given R package name.
+    
+            Note: For Bioconductor we will take only the latest release as new releases have to 
+                  be compatible with the latest Bioconductor version.
 
-            :param package_name: name of the package to search info for
-            :return: list of all previous releases
+            :param package: the package to search info for
             """
 
             class CRANArchiveParser(HTMLParser):
+                """
+                Class to parse the CRAN archive page and get the releases of the package
+                """
                 def __init__(self):
                     super().__init__()
                     self.releases = []
@@ -5095,15 +4932,18 @@ def complete_exts_list(ecs):
 
             releases = []
 
-            url = f"https://cran.r-project.org/src/contrib/Archive/{package_name}/"
+            # Search R CRAN archive database by package name
+            url = "%s/%s" % (self.cran_archive_url, package.name)
             response = requests.get(url)
 
+            # If the package is found, get old releases
             if response.status_code == 200:
                 parser = CRANArchiveParser()
                 parser.feed(response.text)
                 releases = parser.releases
-
-            latest_package_info = self.get_package_info(package_name)  # Latest release
+                
+            # Latest release
+            latest_package_info = self.get_package_info(package.name)
             releases.append(latest_package_info['Version'])
 
             return releases
@@ -5197,7 +5037,7 @@ def complete_exts_list(ecs):
         def complete_package_imports(self, package: Package):
 
             # Get the available versions of the package
-            available_versions = self.get_all_package_releases(package.name)
+            available_versions = self.get_all_releases(package)
 
             # Clean the package version from unwanted characters like '\n'
             package.version = clean_version(package.version)
@@ -5228,8 +5068,8 @@ def complete_exts_list(ecs):
                         pkg.version_constraints.append(package.version)    
 
                         # Get the final version from the all version constraints
-                        version = get_latest_version(self.get_all_package_releases(
-                            package.name), pkg.version_constraints)
+                        available_versions = self.get_all_releases(package)
+                        version = get_latest_version(available_versions, pkg.version_constraints)
 
                         # Check if the current version is the same as the processed version. If so, do nothing
                         if version == pkg.version:
@@ -5504,6 +5344,144 @@ def complete_exts_list(ecs):
 
             return self.exts_list_with_imports
 
+    def clean_version(version):
+        """
+        Clean the version string from unwanted characters
+
+        :param version: version string to clean
+        """
+
+        if not version:
+            return None
+
+        # Allowed characters in package_version
+        allowed_chars = r'[^0-9><=!*. \-]'
+
+        # Delete all characters that are not allowed
+        return re.sub(allowed_chars, '', version)
+
+    def format_exts_list(exts_list: List[Package]):
+        """
+        Format the extensions list to match easyconfig standards
+
+        :param exts_list: extensions list to be formated
+        """
+
+        if not exts_list:
+            print_error("Extensions list not specified", log=_log)
+            return None
+
+        # Format the extensions to be written in the EasyConfig file
+        exts_list_lines = ['exts_list = [']
+
+        for ext in exts_list:
+            exts_list_lines.append("%s('%s', '%s', {" % (INDENT_4SPACES, ext.name, ext.version))
+            for key, value in ext.options.items():
+                if type(value) == str:
+                    exts_list_lines.append("%s'%s': '%s'," % (INDENT_4SPACES * 2, key, value))
+                else:
+                    exts_list_lines.append("%s'%s': %s," % (INDENT_4SPACES * 2, key, value))
+            exts_list_lines.append('%s}),' % (INDENT_4SPACES,))
+
+        exts_list_lines.append(']\n')
+
+        return exts_list_lines
+
+    def get_latest_version(available_versions, version_constraints: List[str]):
+        """
+        Get the latest version of a package based on version constraints.
+
+        :param available_versions: List of available versions as strings
+        :param version_constraints: Version constraints string
+        :return: Latest version that satisfies the constraints
+        """
+
+        # Convert the version constraints to a string
+        version_list_string = ", ".join(version_constraints)
+
+        version_list_string = version_list_string.replace('*', '')
+        
+        try:
+            specifier_set = SpecifierSet(version_list_string)
+        except InvalidVersion:
+            raise ValueError("Invalid version constraints")
+
+        valid_versions = [Version(v) for v in available_versions if Version(v) in specifier_set]
+
+        if not valid_versions:
+            return None
+
+        return str(max(valid_versions))
+
+    def get_exts_list_language(ec):
+        """
+        Get the language of the extension
+
+        :param ec: EasyConfig instance to get the language from
+        """
+
+        # Check exts_defaultclass
+        exts_defaultclass = ec.get('ec', {}).get('exts_defaultclass', '')
+        if exts_defaultclass:
+            if exts_defaultclass.lower() in ['pythonpackage', 'pythonextension']:
+                return 'python'
+            elif exts_defaultclass.lower() in ['perlmodule', 'perlextension']:
+                return 'perl'
+            elif exts_defaultclass.lower() in ['rpackage', 'rextension']:
+                return 'r'
+
+        # Check specific EasyBlock parameters
+        easyblock = ec.get('ec', {}).get('easyblock', '')
+        if easyblock:
+            if easyblock.lower() in ['pythonpackage', 'pythonextension', 'pythonbundle']:
+                return 'python'
+            elif easyblock.lower() in ['perlmodule', 'perlextension', 'perlbundle']:
+                return 'perl'
+            elif easyblock.lower() in ['rpackage', 'rextension', 'rbundle']:
+                return 'r'
+
+        # Check toolchain
+        toolchain = ec.get('ec', {}).get('toolchain', {}).get('name', '')
+        if toolchain:
+            if toolchain.lower() in ['python', 'python3', 'pythontoolchain']:
+                return 'python'
+            elif toolchain.lower() in ['perl', 'perltoolchain']:
+                return 'perl'
+            elif toolchain.lower() in ['r', 'rtoolchain']:
+                return 'r'
+
+        # Check dependencies
+        dependencies = ec.get('ec', {}).get('dependencies', [])
+        for dep in dependencies:
+            dep_name = dep.get('name', '').lower()
+            if 'python' in dep_name:
+                return 'python'
+            elif 'perl' in dep_name:
+                return 'perl'
+            elif 'r' in dep_name:
+                return 'r'
+
+        return None
+
+    def get_extension_instance(ec):
+
+        instance = None
+
+        language = get_exts_list_language(ec)
+
+        if language == 'r':
+            print_msg("Detected 'R' language...", log=_log)
+            instance = RExtension(ec)
+        elif language == 'perl':
+            print_warning("Perl not supported yet.", log=_log)
+        elif language == 'python':
+            print_msg("Detected 'Python' language...", log=_log)
+            instance = PythonExtension(ec)
+        else:
+            print_warning("Language not supported: %s" % language, log=_log)
+
+        return instance
+
     #
     # COMPLETE EXTS LIST CODE
     #
@@ -5545,8 +5523,8 @@ def complete_exts_list(ecs):
             continue
 
         # Write the new easyconfig file
-        output_filename = ec['spec'].replace('.eb', '.completed')
         print_msg('Writing new EasyConfig file...', log=_log)
+        output_filename = ec['spec'].replace('.eb', '.completed')
 
         regex = re.compile(r'^exts_list(.|\n)*?\n\]\s*$', re.M)
         ectxt = regex.sub('\n'.join(extensions), read_file(ec['spec']))
