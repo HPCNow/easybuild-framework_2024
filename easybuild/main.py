@@ -49,7 +49,7 @@ import traceback
 #  expect missing log output when this not the case!
 from easybuild.tools.build_log import EasyBuildError, print_error, print_msg, print_warning, stop_logging
 
-from easybuild.framework.easyblock import build_and_install_one, inject_checksums, inject_checksums_to_json, complete_exts_list
+from easybuild.framework.easyblock import build_and_install_one, inject_checksums, inject_checksums_to_json, exts_list_utils
 from easybuild.framework.easyconfig import EASYCONFIGS_PKG_SUBDIR
 from easybuild.framework.easyconfig import easyconfig
 from easybuild.framework.easystack import parse_easystack
@@ -534,9 +534,10 @@ def process_eb_args(eb_args, eb_go, cfg_settings, modtool, testing, init_session
         with rich_live_cm():
             inject_checksums_to_json(ordered_ecs, options.inject_checksums_to_json)
 
-    elif options.complete_exts_list:
+
+    elif options.complete_exts_list or options.update_exts_list:
         with rich_live_cm():
-            complete_exts_list(ordered_ecs)
+            exts_list_utils(ordered_ecs, complete=options.complete_exts_list, update=options.update_exts_list)
 
         return True
 

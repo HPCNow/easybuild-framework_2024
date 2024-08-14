@@ -820,6 +820,7 @@ class EasyBuildOptions(GeneralOption):
                                        "warnings; 'error': fail with an error)", 'choice', 'store',
                                        LOCAL_VAR_NAMING_CHECK_WARN, LOCAL_VAR_NAMING_CHECKS),
             'complete-exts-list': ("Complete the exts_list of an easyconfig file", None ,'store_true', False),                           
+            'update-exts-list': ("Update the exts_list of an easyconfig file", None ,'store_true', False),                           
         })
         self.log.debug("easyconfig_options: descr %s opts %s" % (descr, opts))
         self.add_group_parser(opts, descr, prefix='')
