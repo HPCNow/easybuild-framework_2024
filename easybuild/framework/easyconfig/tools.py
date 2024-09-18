@@ -43,6 +43,7 @@ import fnmatch
 import glob
 import os
 import re
+import requests
 import sys
 import tempfile
 
@@ -893,3 +894,78 @@ def det_copy_ec_specs(orig_paths, from_pr=None, from_commit=None):
                 raise EasyBuildError("Found multiple paths for %s in commit: %s", filename, commit_matches)
 
     return paths, target_path
+
+
+def get_bioconductor_packages(bioc_version):
+    """
+    Get the list of Bioconductor packages from the Bioconductor database.
+
+    :param bioc_version: Bioconductor version
+    """
+
+    bioc_packages={}
+
+    base_bioc_url = 'https://bioconductor.org/packages/json/%s' % bioc_version
+    bioc_urls = ['%s/bioc/packages.json' % base_bioc_url,
+                    '%s/data/annotation/packages.json' % base_bioc_url,
+                    '%s/data/experiment/packages.json' % base_bioc_url]
+    
+
+    for url in bioc_urls:
+        try:
+
+            response = requests.get(url)
+
+            if response.status_code == 200:
+                bioc_packages.update(response.json())
+            else:
+                print_warning(f"Failed to get biocondcutor packages from {url}: HTTP status: {response.status_code}")
+        except Exception as err:
+            print_warning(f"Exception while getting bioconductor packages from  {url}: {err}")
+
+    return bioc_packages
+
+
+
+
+def get_pkg_metadata(pkg_class, pkg_name, pkg_version):
+    """
+    Get the metadata of the given package
+
+    :param pkg_class: package class (RPackage, PythonPackage, PerlPackage, ...)
+    :param pkg_name: package name
+    :param pkg_version: package version. If None, the latest version will be retrieved.
+    """
+
+    # Initialize metadata variable
+    metadata = None
+
+    if pkg_class == "RPackage":
+        cran_url = "https://crandb.r-pkg.org"
+
+        if pkg_version:
+            url = f"{cran_url}/{pkg_name}/{pkg_version}"
+        else:
+            url = f"{cran_url}/{pkg_name}"
+
+    elif pkg_class == "PythonPackage":
+        url = f"https://pypi.org/pypi/{pkg_name}/json"
+
+    elif pkg_class == "PerlPackage":
+        raise NotImplementedError
+    
+    else:
+        raise ValueError(
+            f"pkg_class {pkg_class} not supported. Available options: RPackage, PythonPackage, PerlPackage, BioconductorPackage")
+
+    try:
+        # Get the metadata from the database
+        response = requests.get(url)
+
+        if response.status_code == 200:
+            metadata = response.json()
+
+    except Exception as err:
+        print_warning(f"Exception while getting metadata for extension {pkg_name}: {err}")
+
+    return metadata
