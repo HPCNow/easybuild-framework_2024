@@ -903,17 +903,20 @@ def get_bioconductor_packages(bioc_version):
     :param bioc_version: Bioconductor version
     """
 
-    bioc_packages={}
+    if not bioc_version:
+        return None
 
+    # Bioconductor URLs
     base_bioc_url = 'https://bioconductor.org/packages/json/%s' % bioc_version
     bioc_urls = ['%s/bioc/packages.json' % base_bioc_url,
-                    '%s/data/annotation/packages.json' % base_bioc_url,
-                    '%s/data/experiment/packages.json' % base_bioc_url]
-    
+                 '%s/data/annotation/packages.json' % base_bioc_url,
+                 '%s/data/experiment/packages.json' % base_bioc_url]
+
+    # Initialize the dictionary to store the Bioconductor packages
+    bioc_packages = {}
 
     for url in bioc_urls:
         try:
-
             response = requests.get(url)
 
             if response.status_code == 200:
@@ -926,19 +929,15 @@ def get_bioconductor_packages(bioc_version):
     return bioc_packages
 
 
-
-
-def get_pkg_metadata(pkg_class, pkg_name, pkg_version):
+def get_pkg_metadata(pkg_class, pkg_name, pkg_version, bioconductor_packages=None):
     """
     Get the metadata of the given package
 
-    :param pkg_class: package class (RPackage, PythonPackage, PerlPackage, ...)
+    :param pkg_class: package class (RPackage, PythonPackage, PerlPackage)
     :param pkg_name: package name
     :param pkg_version: package version. If None, the latest version will be retrieved.
+    :param bioconductor_packages: Bioconductor packages metadata (if pkg_class is a Biocondcutor's one)
     """
-
-    # Initialize metadata variable
-    metadata = None
 
     if pkg_class == "RPackage":
         cran_url = "https://crandb.r-pkg.org"
@@ -951,12 +950,8 @@ def get_pkg_metadata(pkg_class, pkg_name, pkg_version):
     elif pkg_class == "PythonPackage":
         url = f"https://pypi.org/pypi/{pkg_name}/json"
 
-    elif pkg_class == "PerlPackage":
-        raise NotImplementedError
-    
     else:
-        raise ValueError(
-            f"pkg_class {pkg_class} not supported. Available options: RPackage, PythonPackage, PerlPackage, BioconductorPackage")
+        raise NotImplementedError
 
     try:
         # Get the metadata from the database
@@ -964,8 +959,42 @@ def get_pkg_metadata(pkg_class, pkg_name, pkg_version):
 
         if response.status_code == 200:
             metadata = response.json()
+        elif bioconductor_packages:
+            # Iterate over bioconductor packages to find the package
+            for package in bioconductor_packages.items():
+                if package[0] == pkg_name:
+                    metadata = package[1]
+                    break
+        else:
+            metadata = None
 
     except Exception as err:
         print_warning(f"Exception while getting metadata for extension {pkg_name}: {err}")
+        metadata = None
 
     return metadata
+
+
+def get_pkg_dependencies(pkg_class, metadata):
+    """"
+    Get the dependencies of the given package
+    
+    :param pkg_class: package class (RPackage, PythonPackage, PerlPackage)
+    :param metadata: package metadata
+    """
+
+    # Initialize the list of dependencies
+    dependencies = []
+
+    if metadata:
+        if pkg_class == "RPackage":
+            for key in ('Depends', 'Imports', 'LinkingTo'):
+                if key in metadata:
+                    for pkg_name, pkg_version in metadata[key].items():
+                        dependencies.append((pkg_name, pkg_version))
+        else:
+            raise NotImplementedError
+    else:
+        pass
+    
+    return dependencies

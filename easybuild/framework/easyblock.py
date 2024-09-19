@@ -49,20 +49,10 @@ import json
 import os
 import re
 import stat
-import subprocess
-import sys
-import tarfile
 import tempfile
 import time
 import traceback
-from typing import List
-import zipfile
-import requests
-import hashlib
 from datetime import datetime
-from html.parser import HTMLParser
-from packaging.version import Version, InvalidVersion
-from packaging.specifiers import SpecifierSet
 
 import easybuild.tools.environment as env
 import easybuild.tools.toolchain as toolchain
@@ -73,7 +63,7 @@ from easybuild.framework.easyconfig.easyconfig import get_module_path, letter_di
 from easybuild.framework.easyconfig.format.format import SANITY_CHECK_PATHS_DIRS, SANITY_CHECK_PATHS_FILES
 from easybuild.framework.easyconfig.parser import fetch_parameters_from_easyconfig
 from easybuild.framework.easyconfig.style import MAX_LINE_LENGTH
-from easybuild.framework.easyconfig.tools import dump_env_easyblock, get_paths_for, get_pkg_metadata, get_bioconductor_packages
+from easybuild.framework.easyconfig.tools import dump_env_easyblock, get_paths_for, get_bioconductor_packages, get_pkg_metadata, get_pkg_dependencies
 from easybuild.framework.easyconfig.templates import TEMPLATE_NAMES_EASYBLOCK_RUN_STEP, template_constant_dict
 from easybuild.framework.extension import Extension, resolve_exts_filter_template
 from easybuild.tools import LooseVersion, config, run
@@ -178,6 +168,8 @@ class EasyBlock(object):
 
         # extensions
         self.exts = []
+        self.exts_updated = []
+        self.exts_completed = []
         self.exts_all = None
         self.ext_instances = []
         self.skip = None
@@ -2919,7 +2911,7 @@ class EasyBlock(object):
         """
 
         # Initialize variable
-        checksum = None
+        checksum = ''
 
         releases = pkg_data.get('releases', {})
         version_info = releases.get(pkg_version, [])
@@ -2928,90 +2920,189 @@ class EasyBlock(object):
             # Look for sdist first
             for file_info in version_info:
                 if file_info.get('packagetype') == 'sdist':
-                    checksum = file_info.get('digests', {}).get('sha256', None)
+                    checksum = file_info.get('digests', {}).get('sha256', '')
 
             # If no sdist found, take the checksum of the first distribution file
             if not checksum:
-                checksum = version_info[0].get('digests', {}).get('sha256', None)
+                checksum = version_info[0].get('digests', {}).get('sha256', '')
 
         return checksum
 
-    def get_updated_exts_list(self):
+    def _get_metadata_values(self, metadata, exts_defaultclass):
+
+        if exts_defaultclass == "RPackage":
+            name = metadata.get('Package', '')
+            version = metadata.get('Version', '')
+            checksum = metadata.get('MD5sum', '')
+
+        elif exts_defaultclass == "PythonPackage":
+            name = metadata.get('info', {}).get('name', '')
+            version = metadata.get('info', {}).get('version', '')
+            checksum = self._get_python_package_checksum(metadata, version)
+
+        else:
+            raise NotImplementedError
+
+        return name, version, checksum
+    
+    def _clean_pkg_values(self, pkg):
         """
-        Create a new list of extensions with updated versions and store it in the instance variable.
+        Clean the given ext name and version and checksum.
+
+        :param pkg: extension data
+        """
+        allowed_version_chars = r'[^0-9><=!*. \-]'
+
+        # Regular expression pattern to match versions like 'RSQLite (>= 2.0)'
+        pattern = r'^(?P<name>[^\s]+) \((?P<info>.+)\)$'
+        match = re.match(pattern, pkg['name'])
+
+        if match:
+            pkg['name'] = match.group('name')
+            pkg['version'] = match.group('info')
+
+        # Remove any non-alphanumeric characters from the version
+        if pkg['version']:
+            pkg['version'] = re.sub(allowed_version_chars, '', pkg['version'])
+
+        # Remove any new line characters from the name, version and checksum
+        pkg['name'] = pkg['name'].replace('\n', '')
+        pkg['version'] = pkg['version'].replace('\n', '')
+        checksum = pkg['options']['checksums']
+        if checksum:
+            pkg['options']['checksums'] = [checksum[0].replace('\n', '')]
+
+    def _process_R_dependencies(self, ext, bioconductor_packages=None, exclude_list=None):
+        """
+        Process the dependencies of the given R package.
+
+        :param ext: extension data
+        :param bioconductor_packages: list of Bioconductor packages
+        :param processed: processed extensions
         """
 
-        # Init variables
-        exts_updated = []
+        # Get metadata of the extension
+        metadata = get_pkg_metadata(pkg_class="RPackage",
+                                    pkg_name=ext['name'],
+                                    pkg_version=ext['version'],
+                                    bioconductor_packages=bioconductor_packages)
+        
+        # Get dependencies of the package
+        dependencies = get_pkg_dependencies(pkg_class="RPackage",
+                                            metadata=metadata)
+
+        # If dependencies, then process them via recursive call
+        for dep_name, dep_version in dependencies:
+                    
+            # Build the package
+            pkg = {"name": dep_name, "version": dep_version, "options": {"checksums": []}}
+
+            # Clean the package values
+            self._clean_pkg_values(pkg)
+
+            # If already processed, then skip
+            if any(processed['name'] == pkg['name'] for processed in self.exts_completed):
+                continue
+
+            # If in exclude list, then skip
+            if pkg['name'] in exclude_list:
+                continue
+            
+            # TODO:vmachado: Discuss this with Danilo
+            # Always look for latest version of the dependency
+            pkg['version'] = None
+
+            # Process the package dependency
+            self._process_R_dependencies(pkg, bioconductor_packages, exclude_list)
+
+        # Get metadata of the values
+        name, version, checksum = self._get_metadata_values(metadata, "RPackage")
+
+        # Build the package
+        pkg = {"name": name,
+                "version": version,
+                "options": {"checksums": [checksum]}}
+        
+        # Clean the package values
+        self._clean_pkg_values(pkg)
+
+        # Store the dependency
+        self.exts_completed.append(pkg)
+
+
+    def complete_exts_list(self):
+        """
+        Complete the extensions list with its dependencies in correct order. Store it in the instance variable.
+        """
+
+        if self.cfg['exts_defaultclass'] == "RPackage":
+            # Get the bioconductor packages (if applicable)
+            bioconductor_packages = get_bioconductor_packages(self.bioconductor_version)
+
+            # List of packages to exclude from the dependencies
+            exclude_list = ['R', 'base', 'compiler', 'datasets', 'graphics',
+                            'grDevices', 'grid', 'methods', 'parallel',
+                            'splines', 'stats', 'stats4', 'tcltk', 'tools',
+                            'utils', 'MASS']
+            
+            #TODO:vmachado: expand Exclude list with depedency dependencies
+
+            # Aesthetic print
+            print()
+
+            for ext in self.exts:
+                self._process_R_dependencies(ext, bioconductor_packages, exclude_list)
+
+            # Aesthetic print
+            print()
+
+        else:
+            raise NotImplementedError
+
+    def update_exts_list(self):
+        """
+        Update extensions list with updated versions and store it in the instance variable.
+        """
+
+        # Get the bioconductor packages (if applicable)
+        bioconductor_packages = get_bioconductor_packages(self.bioconductor_version)
 
         # Aesthetic print
         print()
 
-        # Initialize variables
-        bioconductor_packages = None
-        exts_defaultclass = self.cfg['exts_defaultclass']
-
-        # Get the default class for extensions
-        if self.bioconductor_version:
-            bioconductor_packages = get_bioconductor_packages(self.bioconductor_version)
-
-        # TODO:vmachado: evalue if we should be using ext_instances instead of exts
         for ext in self.exts:
 
-            # Get metadata only if the default class is not BioconductorPackage
-            metadata = get_pkg_metadata(pkg_class=exts_defaultclass,
+            # Get metadata of the extension
+            metadata = get_pkg_metadata(pkg_class=self.cfg['exts_defaultclass'],
                                         pkg_name=ext['name'],
-                                        pkg_version=None)
+                                        pkg_version=None,
+                                        bioconductor_packages=bioconductor_packages)
 
-            # If biocondcutor easyconfig and no package found in CRAN, then search package in Biocondcutor DB
-            if not metadata and self.bioconductor_version:
-                # Iterate over bioconductor packages to find the package
-                for package in bioconductor_packages.items():
-                    if package[0] == ext['name']:
-                        metadata = package[1]
-                        break
-
+            # Process the metadata
             if metadata:
-                if exts_defaultclass == "RPackage":
-                    name = metadata.get('Package', None)
-                    version = metadata.get('Version', None)
-                    checksum = metadata.get('MD5sum', None)
+                name, version, checksum = self._get_metadata_values(metadata, self.cfg['exts_defaultclass'])
 
-                elif exts_defaultclass == "PythonPackage":
-                    name = metadata['info']['name']
-                    version = metadata['info']['version']
-                    checksum = self._get_python_package_checksum(metadata, version)
-
-                elif exts_defaultclass == "PerlPackage":
-                    raise NotImplementedError
-                else:
-                    raise ValueError(
-                        f"exts_defaultclass {exts_defaultclass} not supported")
-
-                # Initialize variable
-                ext_updated = {}
-
-                # TODO:vmachado: decide if this option is better
-                # ext_updated = copy.deepcopy(ext)
-
-                ext_updated['name'] = name.replace('\n', '')
-                ext_updated['version'] = version.replace('\n', '')
-                if checksum:
-                    ext_updated['options'] = {"checksums": [checksum.replace('\n', '')]}
+                # Build the package
+                pkg = {"name": name,
+                       "version": version,
+                       "options": {"checksums": [checksum]}}
+                
+                # Clean the package values
+                self._clean_pkg_values(pkg)
 
                 # Store the updated extension
-                exts_updated.append(ext_updated)
+                self.exts_updated.append(pkg)
 
                 # Print message to the user
-                if ext['version'] == ext_updated['version']:
+                if ext['version'] == pkg['version']:
                     print_msg(f"Package {ext['name']:<{20}} v{ext['version']:<{10}} {'up-to-date':<{20}}", log=_log)
                 else:
                     print_msg(
-                        f"Package {ext['name']:<{20}} v{ext['version']:<{10}} updated to {ext_updated['version']:<{20}}", log=_log)
+                        f"Package {ext['name']:<{20}} v{ext['version']:<{10}} updated to {pkg['version']:<{20}}", log=_log)
 
             else:
                 # Store the original extension
-                exts_updated.append(ext)
+                self.exts_updated.append(ext)
 
                 # Print message to the user
                 print_msg(f"Package {ext['name']:<{20}} v{ext['version']:<{10}} {'info not found':<{20}}", log=_log)
@@ -3019,9 +3110,7 @@ class EasyBlock(object):
         # Aesthetic print
         print()
 
-        return exts_updated
-
-    def get_formatted_exts_list(self, exts_list):
+    def _format_exts_list(self, exts_list):
         """
         Format the extensions list to match easyconfig standards and store it in the instance variable.
         """
@@ -3042,13 +3131,16 @@ class EasyBlock(object):
 
         return exts_formatted
 
-    def write_new_easyconfig(self, exts_list):
+    def update_easyconfig_exts_list(self, exts_list):
         """
         Write a new easyconfig file with the given extensions list.
         """
 
+        # Format the extension's dependencies to match EasyConfig format
+        exts_list_formatted = self._format_exts_list(exts_list)
+
         regex = re.compile(r'^exts_list(.|\n)*?\n\]\s*$', re.M)
-        ectxt = regex.sub('\n'.join(exts_list), read_file(self.cfg.path))
+        ectxt = regex.sub('\n'.join(exts_list_formatted), read_file(self.cfg.path))
 
         write_file(self.cfg.path, ectxt)
 
@@ -5036,1024 +5128,6 @@ def inject_checksums(ecs, checksum_type):
 
         write_file(ec['spec'], ectxt)
 
-
-# def exts_list_utils(ecs, complete=False, update=False):
-#     """
-#     Complete the extension's dependencies of the given EasyConfig instances
-
-#     :param ecs: list of EasyConfig instances to complete dependencies for
-#     """
-
-#     # UTILS EXTS LIST DEVELOPMENT INSTRUCTIONS:
-#     """
-#         git clone -b easybuild-update-integration https://github.com/HPCNow/easybuild-framework_2024.git
-#         cd easybuild-framework_2024
-#         python3 -m venv .venv
-#         . .venv/bin/activate
-#         pip install -r requirements.txt
-#         pip install easybuild-easyblocks
-#         pip install -e .
-#         python3 easybuild/main.py "your-eb-recipie-path" --complete-exts-list
-#     """
-
-#     #
-#     # UTILS EXTS LIST CLASSES
-#     #
-
-#     class Package:
-#         """
-#         Class to define a package with its dependencies
-#         """
-
-#         def __init__(self, name=None, version=None, options={}, imports=[], version_constraints=[], original=False):
-#             self.name: str = name
-#             self.version: str = version
-#             self.options: dict = options
-#             self.imports: List[str] = imports
-#             self.version_constraints: List[str] = version_constraints
-#             self.original = original
-
-#     class RExtension:
-#         """
-#         Class to complete the extension's dependencies for R packages
-#         """
-
-#         def __init__(self, ec):
-#             self.ec = ec
-
-#             self.exts_list_original = ec.get('ec', {}).get('exts_list', [])
-#             self.update_exts_list: List[Package] = []
-#             self.complete_exts_list: List[Package] = []
-
-#             self.bioconductor_version = self._get_bioconductor_version(ec)
-#             self.bioc_packages = {}
-
-#             self.cran_url = "http://crandb.r-pkg.org"
-#             self.cran_archive_url = "https://cran.r-project.org/src/contrib/Archive"
-
-#             self.base_bioc_url = 'https://bioconductor.org/packages/json/%s' % self.bioconductor_version
-#             self.bioc_urls = ['%s/bioc/packages.json' % self.base_bioc_url,
-#                               '%s/data/annotation/packages.json' % self.base_bioc_url,
-#                               '%s/data/experiment/packages.json' % self.base_bioc_url]
-
-#             self.depend_exclude = ['R', 'base', 'compiler', 'datasets', 'graphics',
-#                                    'grDevices', 'grid', 'methods', 'parallel',
-#                                    'splines', 'stats', 'stats4', 'tcltk', 'tools',
-#                                    'utils', 'MASS']
-
-#         def _complete_package_imports(self, package: Package, parent_package: Package | None = None):
-
-#             # Get the available versions of the package
-#             available_versions = self._get_all_releases(package)
-
-#             # Clean the package version from unwanted characters like '\n'
-#             package.version = clean_version(package.version)
-
-#             # If package version is literal, then format it to be a version constraint
-#             if all(c.isdigit() or c == '.' for c in package.version):
-#                 package.version = f'=={package.version}'
-
-#             # Get the latest version of the package that satisfies the package version constraints
-#             version = get_latest_version(available_versions, [package.version])
-
-#             # Flag to check if the package has already been processed
-#             is_package_already_processed = False
-
-#             # Check if the package has already been processed and if the version or version constraints are different
-#             for pkg in self.complete_exts_list:
-
-#                 # Check if the package has already been processed
-#                 if pkg.name == package.name:
-
-#                     # Mark the package as already processed
-#                     is_package_already_processed = True
-
-#                     # Check if this version constraint has been already processed
-#                     if package.version not in pkg.version_constraints:
-
-#                         # Append version constraint to the list
-#                         pkg.version_constraints.append(package.version)
-
-#                         # Get the final version from the all version constraints
-#                         version = get_latest_version(available_versions, pkg.version_constraints)
-
-#                         if not version:
-#                             from_str = f"{parent_package.name} v{parent_package.version}" if parent_package else "original exts_list"
-#                             raise ValueError(
-#                                 f"Conflict solving package versions:\n\tPackage: {package.name}\n\tVersion constraints: {pkg.version_constraints}\n\tFrom: {from_str}")
-
-#                         # Check if the current version is the same as the processed version. If so, do nothing
-#                         if version == pkg.version:
-#                             return
-
-#                     else:
-#                         # Version constraint already in the version_constraints list. Therefore, already processed
-#                         return
-
-#                     # We found the package, break the loop
-#                     break
-
-#             # Get the package information
-#             package_info = self._get_package_info(package.name, version)
-
-#             # If there is not package_info then skip the package
-#             if not package_info:
-#                 print_msg("No info found for package %s. Skipping..." % (package.name), log=_log)
-#                 return
-
-#             # Get the package name from database package info
-#             name = package_info.get('Package')
-
-#             # Get version from database package info
-#             version = package_info.get('Version')
-
-#             # Get the checksum from database package info
-#             options = package.options
-#             checksum = package_info.get('MD5sum', None)
-#             if checksum:
-#                 options['checksums'] = [checksum.replace('\n', '')]
-
-#             # Get imports from the package
-#             imports = package_info.get('Imports', {})
-#             if imports:
-#                 if isinstance(imports, list):
-#                     imports = {item: '*' for item in imports}
-#                 imports.update(imports)
-
-#             # Get depends from the package
-#             package_depends = package_info.get('Depends', {})
-#             if package_depends:
-#                 if isinstance(package_depends, list):
-#                     package_depends = {item: '*' for item in package_depends}
-#                 imports.update(package_depends)
-
-#             # Get LinkingTo from the package
-#             package_linkingTo = package_info.get('LinkingTo', {})
-#             if package_linkingTo:
-#                 if isinstance(package_linkingTo, list):
-#                     package_linkingTo = {item: '*' for item in package_linkingTo}
-#                 imports.update(package_linkingTo)
-
-#             # Process the imports
-#             if imports:
-#                 for (import_name, import_version) in imports.items():
-#                     # Regular expression pattern to match versions like 'RSQLite (>= 2.0)'
-#                     pattern = r'^(?P<name>[^\s]+) \((?P<info>.+)\)$'
-#                     match = re.match(pattern, import_name)
-
-#                     if match:
-#                         import_name = match.group('name')
-#                         import_version = match.group('info')
-
-#                     # Skip dependencies that are already in the exclude set
-#                     if import_name in self.depend_exclude:
-#                         continue
-
-#                     pkg = Package(name=import_name, version=import_version, options={}, imports={})
-#                     # Call this function recursively to get the dependencies of the dependencies
-#                     self._complete_package_imports(package=pkg, parent_package=package)
-
-#             name_width = 20
-#             version_width = 10
-#             source_width = 20
-
-#             if parent_package:
-#                 print_msg(
-#                     f"Added package {name:<{name_width}} v{version:<{version_width}} from {parent_package.name:<{source_width}}", log=_log)
-#             else:
-#                 print_msg(
-#                     f"Added package {name:<{name_width}} v{version:<{version_width}} from original exts_list", log=_log)
-
-#             if is_package_already_processed:
-#                 # Package already processed and version changed. Update the version, the imports and the options
-#                 for pkg in self.complete_exts_list:
-#                     if pkg.name == package.name:
-#                         pkg.version = version
-#                         pkg.options = options
-#                         pkg.imports = imports
-#                         # pkg.version_constraints already processed
-
-#                         # We found the package, break the loop
-#                         break
-
-#             else:
-#                 pkg = Package(name=name, version=version, options=options,
-#                               imports=imports, version_constraints=[package.version])
-#                 # Append processed extension to the list
-#                 self.complete_exts_list.append(pkg)
-
-#         def _get_all_releases(self, package: Package):
-#             """
-#             Get all releases of the given R package name.
-
-#             Note: For Bioconductor we will take only the latest release as new releases have to
-#                   be compatible with the latest Bioconductor version.
-
-#             :param package: the package to search info for
-#             """
-
-#             class CRANArchiveParser(HTMLParser):
-#                 """
-#                 Class to parse the CRAN archive page and get the releases of the package
-#                 """
-
-#                 def __init__(self):
-#                     super().__init__()
-#                     self.releases = []
-
-#                 def handle_starttag(self, tag, attrs):
-#                     if tag == 'a':
-#                         for attr in attrs:
-#                             if attr[0] == 'href' and attr[1].endswith('.tar.gz'):
-#                                 version = attr[1].split('_')[1].replace('.tar.gz', '')
-#                                 self.releases.append(version)
-
-#             releases = []
-
-#             # Search R CRAN archive database by package name
-#             url = "%s/%s" % (self.cran_archive_url, package.name)
-#             response = requests.get(url)
-
-#             # If the package is found, get old releases
-#             if response.status_code == 200:
-#                 parser = CRANArchiveParser()
-#                 parser.feed(response.text)
-#                 releases = parser.releases
-
-#             # Latest release
-#             latest_package_info = self._get_package_info(package.name)
-#             releases.append(latest_package_info['Version'])
-
-#             return releases
-
-#         def _get_bioconductor_version(self, ec):
-#             """
-#             Get the Bioconductor version from the EasyConfig instance
-
-#             :param ec: EasyConfig instance to get the Bioconductor version from
-#             """
-
-#             # Check ec name
-#             name = ec.get('ec', {}).get('name', None)
-#             if name == 'R-bundle-Bioconductor':
-#                 version = ec.get('ec', {}).get('version', None)
-#                 if version:
-#                     return version
-
-#             # Check local variable
-#             local_biocver = ec.get('ec', {}).get('local_biocver', None)
-#             if local_biocver:
-#                 return local_biocver
-
-#             # Check local variable
-#             local_bioc_version = ec.get('ec', {}).get('local_bioc_version', None)
-#             if local_bioc_version:
-#                 return local_bioc_version
-
-#             # Check dependencies
-#             dependencies = ec.get('ec', {}).get('dependencies', [])
-#             for dep in dependencies:
-#                 if "R-bundle-Bioconductor" in dep:
-#                     return dep["R-bundle-Bioconductor"]
-
-#             # Check exts_default_options
-#             exts_default_options = ec.get('ec', {}).get('exts_default_options', {})
-#             if exts_default_options:
-#                 source_urls = exts_default_options.get('source_urls', [])
-#                 for url in source_urls:
-#                     if 'bioconductor.org/packages/' in url:
-#                         parts = url.split('bioconductor.org/packages/')
-#                         if len(parts) > 1:
-#                             version_part = parts[1].split('/')[0]
-#                             return version_part
-
-#             # Return None if Bioconductor version is not found
-#             return None
-
-#             # if self.language:
-#             #     self.exts = get_all_dependencies(self.language, self.exts, self.bioconductor_version)
-
-#         def get_complete_exts_list(self, update=False):
-#             """ Get the complete exts list with all dependencies"""
-#             try:
-#                 # Aesthetic print
-#                 print_msg('')
-
-#                 # Process all the extensions
-#                 if update:
-#                     # We will use the updated list. We already have the packages in the list
-#                     for pkg in self.update_exts_list:
-#                         self._complete_package_imports(pkg)
-#                 else:
-#                     for ext in self.exts_list_original:
-#                         package = Package(name=ext[0], version=ext[1], options=ext[2], original=True)
-#                         self._complete_package_imports(package)
-
-#                 # Aesthetic print
-#                 print_msg('')
-
-#                 return self.complete_exts_list
-
-#             except Exception as e:
-#                 print_error(f"Failed to get complete exts list: {e}", log=_log)
-#                 return None
-
-#         def _get_package_info(self, package_name, package_version=None):
-#             """
-#             Get package information from the corresponding database
-
-#             :param package_name: name of package to search info for
-#             :param package_version: version of package to search info for
-#             """
-
-#             # Search R CRAN database by package name and version
-#             if package_version:
-#                 url = "%s/%s/%s" % (self.cran_url, package_name, package_version)
-#                 response = requests.get(url)
-#                 if response.status_code == 200:
-#                     return response.json()
-
-#             # Search R CRAN database by package name
-#             url = "%s/%s" % (self.cran_url, package_name)
-#             response = requests.get(url)
-#             if response.status_code == 200:
-#                 return response.json()
-
-#              # Search bioconductor packages
-#             if self.bioconductor_version:
-
-#                 # Get the Bioconductor packages only once if needed
-#                 if not self.bioc_packages:
-#                     for bioc_url in self.bioc_urls:
-#                         response = requests.get(bioc_url)
-#                         if response.status_code == 200:
-#                             self.bioc_packages.update(response.json())
-
-#                 # Iterate over Bioconductor packages to find the package
-#                 for package in self.bioc_packages.items():
-#                     if package[0] == package_name:
-#                         return package[1]
-
-#             # Package not found
-#             return None
-
-#         def get_update_exts_list(self):
-#             """ Get the update exts list """
-#             try:
-#                 # Aesthetic print
-#                 print_msg('')
-
-#                 for ext in self.exts_list_original:
-
-#                     # Create a package object
-#                     package = Package(name=ext[0], version=ext[1], options=ext[2], original=True)
-
-#                     # Get the latests release package information
-#                     package_info = self._get_package_info(package.name)
-
-#                     # If there is not package_info then skip the package
-#                     if not package_info:
-#                         print_msg("No info found for package %s. Skipping..." % (package.name), log=_log)
-
-#                     # Get the package name from database package info
-#                     package.name = package_info.get('Package')
-
-#                     # Get the latests_version from database package info and update if needed
-#                     latests_version = package_info.get('Version', None)
-
-#                     name_width = 20
-#                     version_width = 10
-#                     source_width = 20
-
-#                     if package.version == latests_version:
-#                         print_msg(
-#                             f"Package {package.name:<{name_width}} v{package.version:<{version_width}} {'up-to-date':<{source_width}}", log=_log)
-#                     else:
-#                         print_msg(
-#                             f"Package {package.name:<{name_width}} v{package.version:<{version_width}} updated to {latests_version:<{source_width}}", log=_log)
-#                         # print_msg(f"Package %s v%s updated to v%s" % (package.name, package.version, latests_version), log=_log)
-#                         package.version = latests_version
-
-#                     # Get the checksum from database package info
-#                     checksum = package_info.get('MD5sum', None)
-#                     if checksum:
-#                         package.options['checksums'] = [checksum.replace('\n', '')]
-
-#                     # Append package to the list
-#                     self.update_exts_list.append(package)
-
-#                 # Aesthetic print
-#                 print_msg('')
-
-#                 return self.update_exts_list
-
-#             except Exception as e:
-#                 print_error(f"Failed to get complete exts list: {e}", log=_log)
-#                 return None
-
-#     class PythonExtension:
-#         """
-#         Class to complete the extension's dependencies for Python packages
-
-#         The PyPi API is used to get the package information. This information
-
-#         """
-
-#         def __init__(self, ec):
-
-#             self.ec = ec
-
-#             self.exts_list_original = ec.get('ec', {}).get('exts_list', [])
-#             self.complete_exts_list: List[Package] = []
-#             self.update_exts_list: List[Package] = []
-
-#             self.pip_path = None
-
-#         def _complete_package_imports(self, package: Package):
-#             """
-#             Complete the package imports of the given package
-#             It will iterate over all the dependencies and get dependencies of the dependencies
-
-#             :param package: the package to complete the imports for
-#             """
-
-#             # Check if package has already been processed.
-#             # This sets the order of the packages in the list BUT it may not have the correct version as it
-#             # does not check all versions constraints at the same time. We will reasure the version later on.
-#             for pkg in self.complete_exts_list:
-#                 if pkg.name == package.name:
-#                     return
-
-#             # Get the package imports
-#             imports = self._get_package_imports(package)
-
-#             # Make sure loop does not crash if no imports are found
-#             if imports is None:
-#                 imports = []
-
-#             # Process package imports
-#             # NOTE: pip install --dry-run returns the package in the list of packages to be installed
-#             for import_name, import_version in imports:
-
-#                 if import_name == package.name:
-#                     # Asure version from PyPi database
-#                     if import_version:
-#                         package.version = import_version
-
-#                     # Get the checksum of the package
-#                     checksum = self._get_package_checksum(package)
-#                     if checksum:
-#                         package.options['checksums'] = [checksum.replace('\n', '')]
-
-#                 else:
-#                     # Process the imports
-#                     import_pkg = Package(name=import_name, version=import_version, options={})
-#                     self._complete_package_imports(import_pkg)
-
-#             print_msg(f"Added package {package.name} v{package.version}", log=_log)
-
-#             # Append processed extension to the list
-#             self.complete_exts_list.append(package)
-
-#         def _create_virtual_env(self, temp_env):
-#             """
-#             Create a virtual environment in the given path
-
-#             :param temp_env: the path to create the virtual environment
-#             """
-
-#             try:
-#                 subprocess.run([sys.executable, '-m', 'venv', temp_env], check=True,
-#                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-#             except subprocess.CalledProcessError as e:
-#                 print_error(
-#                     f"Failed create virtual environment: {e.stderr.decode().strip()}.", log=_log)
-#                 return False
-
-#             return True
-
-#         def _fix_versions(self):
-#             """
-#             Fix the versions of the final exts_list.
-#             Using the original exts_list packages, it will call pip install --dry-run and
-#             get the correct packages versions that will be installed.
-
-#             """
-#             try:
-
-#                 # Get the original packages
-#                 original_packages = [pkg for pkg in self.complete_exts_list if pkg.original]
-
-#                 # Construct the argument list
-#                 args = [self.pip_path, 'install', '--dry-run'] + \
-#                     [f"{pkg.name}=={pkg.version}" for pkg in original_packages]
-
-#                 result = subprocess.run(args,
-#                                         stdout=subprocess.PIPE,
-#                                         stderr=subprocess.PIPE,
-#                                         text=True,
-#                                         check=True)
-
-#             except (SystemExit, subprocess.CalledProcessError, Exception) as e:
-#                 print_error(e.stderr, log=_log)
-#                 return False
-
-#             # Get the final packages versions to install
-#             final_versions = self._get_packages_to_install(result.stdout)
-#             if not final_versions:
-#                 return False
-
-#             # Convert the list of tuples to a dictionary
-#             final_versions = {pkg: version for pkg, version in final_versions}
-
-#             for pkg in self.complete_exts_list:
-#                 if pkg.name in final_versions:
-#                     if pkg.version != final_versions[pkg.name]:
-#                         pkg.version = final_versions[pkg.name]
-
-#             return True
-
-#         def get_complete_exts_list(self, update=False):
-#             """
-#             Get the complete exts list with all dependencies
-#             """
-
-#             # Create a virtual env and use "pip install --dry-run <packages>"" to get dependencies
-#             with tempfile.TemporaryDirectory() as temp_env:
-
-#                 print_msg(f"Creating virtual environment in {temp_env}...", log=_log)
-#                 if not self._create_virtual_env(temp_env):
-#                     return None
-
-#                 # Get venv pip path
-#                 self.pip_path = os.path.join(temp_env, 'bin', 'pip')
-
-#                 # Check if current pip version supports --dry-run, else upgrade pip
-#                 if not self._pip_supports_dry_run():
-
-#                     print_msg("%s does not support --dry-run. Upgrading pip..." % (self._get_pip_version()), log=_log)
-
-#                     if self._upgrade_pip():
-#                         print_msg("pip upgraded successfully: %s" % (self._get_pip_version()), log=_log)
-#                     else:
-#                         return None
-
-#                     if not self._pip_supports_dry_run():
-#                         print_error("pip version does not support --dry-run.", log=_log)
-#                         return None
-
-#                 # Aesthetic print
-#                 print_msg('')
-
-#                 # Process all the extensions
-#                 if update:
-#                     # We will use the updated list. We already have the packages in the list
-#                     for pkg in self.update_exts_list:
-#                         self._complete_package_imports(pkg)
-#                 else:
-#                     for ext in self.exts_list_original:
-#                         package = Package(name=ext[0], version=ext[1], options=ext[2], original=True)
-#                         self._complete_package_imports(package)
-
-#                 # Aesthetic print
-#                 print_msg('')
-
-#                 # Process all version constraints and get final versions at self.exts_list
-#                 if not self._fix_versions():
-#                     return None
-
-#             return self.complete_exts_list
-
-#         def _get_package_imports(self, package: Package):
-#             """
-#             Get the imports of the given package
-#             It will return all the packages that will be installed (including itself)
-
-#             :param package: the package to get the imports for
-#             """
-
-#             result = None
-
-#             # Run "pip install --dry-run" and parse output to get dependencies
-#             try:
-#                 install_str = f"{package.name}=={package.version}" if package.version else package.name
-#                 result = subprocess.run([self.pip_path, 'install', '--dry-run', install_str],
-#                                         stdout=subprocess.PIPE,
-#                                         stderr=subprocess.PIPE,
-#                                         text=True,
-#                                         check=True)
-#             except (SystemExit, subprocess.CalledProcessError, Exception) as e:
-#                 print_warning(
-#                     f"Failed to get dependencies for {package.name}=={package.version}\nTrying to get the latest version of the package...", log=_log)
-
-#             if not result:
-
-#                 try:
-#                     result = subprocess.run([self.pip_path, 'install', '--dry-run', f"{package.name}"],
-#                                             stdout=subprocess.PIPE,
-#                                             stderr=subprocess.PIPE,
-#                                             text=True,
-#                                             check=True)
-
-#                 except (SystemExit, subprocess.CalledProcessError, Exception) as e:
-#                     raise ValueError(e.stderr)
-
-#             return self._get_packages_to_install(result.stdout)
-
-#         def _get_package_checksum(self, package: Package):
-#             """
-#             Get the checksum of the given package
-
-#             :param package: the package to get the checksum for
-#             """
-
-#             # Initialize return value
-#             checksum = None
-
-#             # Get package info from PyPi database
-#             package_info = self._get_package_info(package.name)
-
-#             if package_info:
-#                 releases = package_info.get('releases', {})
-#                 version_info = releases.get(package.version, [])
-
-#                 if version_info:
-#                     # Look for sdist first
-#                     for file_info in version_info:
-#                         if file_info.get('packagetype') == 'sdist':
-#                             checksum = file_info.get('digests', {}).get('sha256', None)
-
-#                     # If no sdist found, take the checksum of the first distribution file
-#                     if not checksum:
-#                         checksum = version_info[0].get('digests', {}).get('sha256', None)
-
-#             return checksum
-
-#         def _get_package_info(self, package_name):
-#             """
-#             Get the package information from PyPI
-
-#             :param package_name: the name of the package to get the information for
-#             """
-
-#             # PyPi API URL
-#             url = f"https://pypi.org/pypi/{package_name}/json"
-#             response = requests.get(url)
-
-#             if response.status_code == 200:
-#                 package_info = response.json()
-#                 return package_info
-#             else:
-#                 print_error(f"Failed to get information for package {package_name}", log=_log)
-#                 return None
-
-#         def _get_packages_to_install(self, packages_str: str):
-
-#             # Initialize return value
-#             package_installs = []
-
-#             # Nothing to do if the input is empty
-#             if packages_str:
-#                 return package_installs
-
-#             # Parse the output to get the dependencies
-#             lines = packages_str.splitlines()
-
-#             for line in lines:
-#                 if line.startswith('Would install'):
-#                     # Patter to search for versioned packages
-#                     pattern = r'([\w\.-]+)-((\d+!)?\d+(\.\d+)*([abc]\d+)?(\.post\d+)?(\.dev\d+)?(\+\w+(\.\w+)*)?)'
-
-#                     # Find all matches in the input string
-#                     matches = re.findall(pattern, line)
-
-#                     # Convert matches to a list of tuples (package, version)
-#                     package_installs = [(match[0], match[1]) for match in matches]
-
-#                     # We found the line, break the loop
-#                     break
-
-#             return package_installs
-
-#         def _get_pip_version(self):
-#             """
-#             Get the current pip version
-#             """
-
-#             try:
-#                 result = subprocess.run([self.pip_path, '--version'], check=True,
-#                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-#                 return result.stdout.decode().strip()
-#             except subprocess.CalledProcessError as e:
-#                 print_error(f"Failed to get pip version: {e.stderr.decode().strip()}.", log=_log)
-#                 return None
-
-#         def get_update_exts_list(self):
-#             """ Get the update exts list """
-#             try:
-
-#                 # Aesthetic print
-#                 print_msg('')
-
-#                 for ext in self.exts_list_original:
-
-#                     # Create a package object
-#                     package = Package(name=ext[0], version=ext[1], options=ext[2], original=True)
-
-#                     # Get the package information
-#                     package_info = self._get_package_info(package.name)
-
-#                     # If there is not package_info then skip the package
-#                     if not package_info:
-#                         print_msg("No info found for package %s. Skipping..." % (package.name), log=_log)
-
-#                     name_width = 20
-#                     version_width = 10
-#                     source_width = 20
-
-#                     # Get the latests_version from database package info and update if needed
-#                     latests_version = package_info['info']['version']
-#                     if package.version == latests_version:
-#                         print_msg(
-#                             f"Package {package.name:<{name_width}} v{package.version:<{version_width}} {'up-to-date':<{source_width}}", log=_log)
-#                     else:
-#                         print_msg(
-#                             f"Package {package.name:<{name_width}} v{package.version:<{version_width}} updated to {latests_version:<{source_width}}", log=_log)
-#                         package.version = latests_version
-
-#                     # Get the checksum from database package info.
-#                     # We already have this info in package_info but I don't want to repeat code
-#                     # and update list is not as time consuming as complete_exts_list
-#                     checksum = self._get_package_checksum(package)
-#                     if checksum:
-#                         package.options['checksums'] = [checksum.replace('\n', '')]
-
-#                     # Append package to the list
-#                     self.update_exts_list.append(package)
-
-#                 # Aesthetic print
-#                 print_msg('')
-
-#                 return self.update_exts_list
-
-#             except Exception as e:
-#                 print_error(f"Failed to get complete exts list: {e}", log=_log)
-#                 return None
-
-#         def _pip_supports_dry_run(self):
-#             """
-#             Check if the current pip version supports --dry-run
-#             """
-
-#             try:
-#                 result = subprocess.run([self.pip_path, 'install', '--help'], check=True,
-#                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-#                 return '--dry-run' in result.stdout.decode()
-#             except subprocess.CalledProcessError as e:
-#                 print_error(f"Failed to check if pip supports --dry-run: {e.stderr.decode().strip()}.", log=_log)
-#                 return False
-
-#         def _upgrade_pip(self):
-#             """
-#             Upgrade pip to the latest version
-#             """
-
-#             try:
-#                 subprocess.run([self.pip_path, 'install', '--upgrade', 'pip'],
-#                                stdout=subprocess.PIPE,
-#                                stderr=subprocess.PIPE,
-#                                check=True)
-#             except subprocess.CalledProcessError as e:
-#                 print_error(f"Failed to upgrade pip: {e.stderr.decode().strip()}.", log=_log)
-#                 return False
-
-#             return True
-
-#     #
-#     # UTILS EXTS LIST FUNCTIONS
-#     #
-
-#     def clean_version(version):
-#         """
-#         Clean the version string from unwanted characters
-
-#         :param version: version string to clean
-#         """
-
-#         if not version:
-#             return None
-
-#         # Allowed characters in package_version
-#         allowed_chars = r'[^0-9><=!*. \-]'
-
-#         # Delete all characters that are not allowed
-#         return re.sub(allowed_chars, '', version)
-
-#     def format_exts_list(exts_list: List[Package]):
-#         """
-#         Format the extensions list to match easyconfig standards
-
-#         :param exts_list: extensions list to be formated
-#         """
-
-#         if not exts_list:
-#             print_error("Extensions list not specified", log=_log)
-#             return None
-
-#         # Format the extensions to be written in the EasyConfig file
-#         exts_list_lines = ['exts_list = [']
-
-#         for ext in exts_list:
-#             exts_list_lines.append("%s('%s', '%s', {" % (INDENT_4SPACES, ext['name'], ext['version']))
-#             for key, value in ext['options'].items():
-#                 if type(value) == str:
-#                     exts_list_lines.append("%s'%s': '%s'," % (INDENT_4SPACES * 2, key, value))
-#                 else:
-#                     exts_list_lines.append("%s'%s': %s," % (INDENT_4SPACES * 2, key, value))
-#             exts_list_lines.append('%s}),' % (INDENT_4SPACES,))
-
-#         exts_list_lines.append(']\n')
-
-#         return exts_list_lines
-
-#     def get_latest_version(available_versions, version_constraints: List[str]):
-#         """
-#         Get the latest version of a package based on version constraints.
-
-#         :param available_versions: List of available versions as strings
-#         :param version_constraints: Version constraints string
-#         :return: Latest version that satisfies the constraints
-#         """
-
-#         # Convert the version constraints to a string
-#         version_list_string = ", ".join(version_constraints)
-
-#         version_list_string = version_list_string.replace('*', '')
-
-#         try:
-#             specifier_set = SpecifierSet(version_list_string)
-#         except InvalidVersion:
-#             raise ValueError("Invalid version constraints")
-
-#         valid_versions = [Version(v) for v in available_versions if Version(v) in specifier_set]
-
-#         if not valid_versions:
-#             return None
-
-#         return str(max(valid_versions))
-
-#     def get_exts_list_language(ec):
-#         """
-#         Get the language of the extension
-
-#         :param ec: EasyConfig instance to get the language from
-#         """
-
-#         # Check exts_defaultclass
-#         exts_defaultclass = ec.get('ec', {}).get('exts_defaultclass', '')
-#         if exts_defaultclass:
-#             if exts_defaultclass.lower() in ['pythonpackage', 'pythonextension']:
-#                 return 'python'
-#             elif exts_defaultclass.lower() in ['perlmodule', 'perlextension']:
-#                 return 'perl'
-#             elif exts_defaultclass.lower() in ['rpackage', 'rextension']:
-#                 return 'r'
-
-#         # Check specific EasyBlock parameters
-#         easyblock = ec.get('ec', {}).get('easyblock', '')
-#         if easyblock:
-#             if easyblock.lower() in ['pythonpackage', 'pythonextension', 'pythonbundle']:
-#                 return 'python'
-#             elif easyblock.lower() in ['perlmodule', 'perlextension', 'perlbundle']:
-#                 return 'perl'
-#             elif easyblock.lower() in ['rpackage', 'rextension', 'rbundle']:
-#                 return 'r'
-
-#         # Check toolchain
-#         toolchain = ec.get('ec', {}).get('toolchain', {}).get('name', '')
-#         if toolchain:
-#             if toolchain.lower() in ['python', 'python3', 'pythontoolchain']:
-#                 return 'python'
-#             elif toolchain.lower() in ['perl', 'perltoolchain']:
-#                 return 'perl'
-#             elif toolchain.lower() in ['r', 'rtoolchain']:
-#                 return 'r'
-
-#         # Check dependencies
-#         dependencies = ec.get('ec', {}).get('dependencies', [])
-#         for dep in dependencies:
-#             dep_name = dep.get('name', '').lower()
-#             if 'python' in dep_name:
-#                 return 'python'
-#             elif 'perl' in dep_name:
-#                 return 'perl'
-#             elif 'r' in dep_name:
-#                 return 'r'
-
-#         return None
-
-#     def get_extension_instance(ec):
-
-#         instance = None
-
-#         language = get_exts_list_language(ec)
-
-#         if language == 'r':
-#             print_msg("Detected 'R' language...", log=_log)
-#             instance = RExtension(ec)
-#         elif language == 'perl':
-#             print_warning("Perl not supported yet.", log=_log)
-#         elif language == 'python':
-#             print_msg("Detected 'Python' language...", log=_log)
-#             instance = PythonExtension(ec)
-#         else:
-#             print_warning("Language not supported: %s" % language, log=_log)
-
-#         return instance
-
-#     #
-#     # UTILS EXTS LIST CODE
-#     #
-
-#     for ec in ecs:
-
-#         # Get the EasyBlock instance
-#         app: EasyBlock = get_easyblock_instance(ec)
-
-#         # Initialize extension instances
-#         app.init_ext_instances()
-
-#         if update:
-
-#             # Update the exts_list
-#             app.update_exts_list()
-
-#             # Format the extension's dependencies to match EasyConfig forma
-#             print_msg("Formatting update exts_list to match EasyConfig format...", log=_log)
-#             update_extensions = format_exts_list(app.exts_updated)
-
-#             if not update_extensions:
-#                 print_error("Failed to update exts_list for EasyConfig file %s" %
-#                             os.path.basename(ec['spec']), log=_log)
-#                 continue
-
-#             # Write the new easyconfig file
-#             ec_backup = back_up_file(ec['spec'], backup_extension='bak_update')
-#             print_msg("Backing up EasyConfig file at %s..." % ec_backup, log=_log)
-
-#             # Write the new easyconfig file
-#             print_msg('Writing updated EasyConfig file...', log=_log)
-#             output_filename = ec['spec']
-
-#             regex = re.compile(r'^exts_list(.|\n)*?\n\]\s*$', re.M)
-#             ectxt = regex.sub('\n'.join(update_extensions), read_file(ec['spec']))
-
-#             write_file(output_filename, ectxt)
-
-#             # Print success message
-#             print_msg('EasyConfig file "%s" written successfully!\n' % output_filename, log=_log)
-
-#         if complete:
-
-#             # Get a complete exts_list
-#             print_msg('Completing exts_list for EasyConfig file "%s"...' % os.path.basename(ec['spec']), log=_log)
-#             complete_exts_list = extension_instance.get_complete_exts_list(update)
-
-#             if not complete_exts_list:
-#                 print_error("Failed to complete exts_list for EasyConfig file %s" %
-#                             os.path.basename(ec['spec']), log=_log)
-#                 continue
-
-#             # Format the extension's dependencies to match EasyConfig forma
-#             print_msg("Formatting new exts_list to match EasyConfig format...", log=_log)
-#             extensions = format_exts_list(complete_exts_list)
-
-#             if not extensions:
-#                 print_error("Failed to complete exts_list for EasyConfig file %s" %
-#                             os.path.basename(ec['spec']), log=_log)
-#                 continue
-
-#             # Write the new easyconfig file
-#             if update:
-#                 ec_backup = back_up_file(ec['spec'], backup_extension='bak_update+complete')
-#             else:
-#                 ec_backup = back_up_file(ec['spec'], backup_extension='bak_complete')
-
-#             print_msg("Backing up EasyConfig file at %s..." % ec_backup, log=_log)
-
-#             # Write the new easyconfig file
-#             print_msg('Writing complete EasyConfig file...', log=_log)
-#             output_filename = ec['spec']
-
-#             regex = re.compile(r'^exts_list(.|\n)*?\n\]\s*$', re.M)
-#             ectxt = regex.sub('\n'.join(extensions), read_file(ec['spec']))
-
-#             write_file(output_filename, ectxt)
-
-#             # Print success message
-#             print_msg('EasyConfig file "%s" written successfully!\n' % output_filename, log=_log)
-
-
 def update_exts_list(ecs):
     """
     Write a new EasyConfig recipie with the updated exts_list
@@ -6085,11 +5159,7 @@ def update_exts_list(ecs):
 
         # Update the exts_list
         print_msg("Updating extension list...", log=_log)
-        exts_updated = app.get_updated_exts_list()
-
-        # Format the extension's dependencies to match EasyConfig forma
-        print_msg("Formatting new extension list to match EasyConfig format...", log=_log)
-        exts_formatted = app.get_formatted_exts_list(exts_updated)
+        app.update_exts_list()
 
         # Write the new easyconfig file
         ec_backup = back_up_file(ec['spec'], backup_extension='bak_update')
@@ -6097,16 +5167,52 @@ def update_exts_list(ecs):
 
         # Write the new easyconfig file
         print_msg('Writing updated EasyConfig file...', log=_log)
-        app.write_new_easyconfig(exts_formatted)
+        app.update_easyconfig_exts_list(app.exts_updated)
 
         # Print success message
         print_msg('New easyConfig file written successfully!', log=_log)
 
 
 def complete_exts_list(ecs):
-    raise NotImplementedError
+    """
+    Write a new EasyConfig recipie with the completed exts_list
 
-    # elif any(line.startswith(x) for x in ('Depends:', 'Imports:', 'LinkingTo:')):
-    #     # entries may specify version requirements between brackets (which we don't care about here)
-    #     dep_names = [x.split('(')[0].strip() for x in line.split(':', 1)[1].split(',')]
-    #     deps.extend([d for d in dep_names if d not in ('', 'R', self.name)])
+    :param ecs: list of EasyConfig instances to complete dependencies for
+    """
+
+    # UTILS EXTS LIST DEVELOPMENT INSTRUCTIONS:
+    """
+        git clone -b easybuild-update-integration https://github.com/HPCNow/easybuild-framework_2024.git
+        cd easybuild-framework_2024
+        python3 -m venv .venv
+        . .venv/bin/activate
+        pip install -r requirements.txt
+        pip install easybuild-easyblocks
+        pip install -e .
+        python3 easybuild/main.py "your-eb-recipie-path" --complete-exts-list
+    """
+
+    for ec in ecs:
+
+        # Get the EasyBlock instance
+        print_msg("Getting easyblock instance...", log=_log)
+        app: EasyBlock = get_easyblock_instance(ec)
+
+        # Initialize extension instances
+        print_msg("Initializing extension list...", log=_log)
+        app.init_ext_instances()
+
+        # Complete the exts_list
+        print_msg("Completing extension list...", log=_log)
+        app.complete_exts_list()
+
+        # Write the new easyconfig file
+        ec_backup = back_up_file(ec['spec'], backup_extension='bak_update')
+        print_msg("Backing up EasyConfig file at %s..." % ec_backup, log=_log)
+
+        # Write the new easyconfig file
+        print_msg('Writing completed EasyConfig file...', log=_log)
+        app.update_easyconfig_exts_list(app.exts_completed)
+
+        # Print success message
+        print_msg('New easyConfig file written successfully!', log=_log)
