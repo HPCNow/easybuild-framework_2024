@@ -47,6 +47,10 @@ import requests
 import sys
 import tempfile
 
+from html.parser import HTMLParser
+from packaging.version import Version, InvalidVersion
+from packaging.specifiers import SpecifierSet
+
 from easybuild.base import fancylogger
 from easybuild.framework.easyconfig import EASYCONFIGS_PKG_SUBDIR
 from easybuild.framework.easyconfig.easyconfig import EASYCONFIGS_ARCHIVE_DIR, ActiveMNS, EasyConfig
@@ -929,7 +933,7 @@ def get_bioconductor_packages(bioc_version):
     return bioc_packages
 
 
-def get_pkg_metadata(pkg_class, pkg_name, pkg_version, bioconductor_packages=None):
+def get_pkg_metadata(pkg_class, pkg_name, pkg_version=None, bioconductor_packages=None):
     """
     Get the metadata of the given package
 
@@ -990,11 +994,105 @@ def get_pkg_dependencies(pkg_class, metadata):
         if pkg_class == "RPackage":
             for key in ('Depends', 'Imports', 'LinkingTo'):
                 if key in metadata:
-                    for pkg_name, pkg_version in metadata[key].items():
-                        dependencies.append((pkg_name, pkg_version))
+                    if isinstance(metadata[key], list):
+                        for item in metadata[key]:
+                            # Assuming each item is a tuple (pkg_name, pkg_version)
+                            dependencies.append((item, '*'))
+                    elif isinstance(metadata[key], dict):
+                        for pkg_name, pkg_version in metadata[key].items():
+                            dependencies.append((pkg_name, pkg_version))
         else:
             raise NotImplementedError
     else:
         pass
     
     return dependencies
+
+
+def get_R_pkg_releases(pkg_name, bioconductor_packages=None):
+    """
+    Get all releases of the given R package name.
+
+    :param package: the package to search info for
+    """
+
+    class CRANArchiveParser(HTMLParser):
+        """
+        Class to parse the CRAN archive page and get the releases of the package
+        """
+
+        def __init__(self):
+            super().__init__()
+            self.releases = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag == 'a':
+                for attr in attrs:
+                    if attr[0] == 'href' and attr[1].endswith('.tar.gz'):
+                        version = attr[1].split('_')[1].replace('.tar.gz', '')
+                        self.releases.append(version)
+
+    releases = []
+
+    cran_archive_url = "https://cran.r-project.org/src/contrib/Archive"
+    
+    # Search R CRAN archive database by package name
+    url = "%s/%s" % (cran_archive_url, pkg_name)
+    response = requests.get(url)
+
+    # Get the package metadata
+    metadata = get_pkg_metadata(pkg_class="RPackage",
+                                pkg_name=pkg_name,
+                                pkg_version=None,
+                                bioconductor_packages=bioconductor_packages)
+
+    # Package found in R CRAN archive
+    if response.status_code == 200:
+        # Get old releases
+        parser = CRANArchiveParser()
+        parser.feed(response.text)
+        releases = parser.releases
+
+    # Get latest release. Also, this is the only release for a given Bioconductor version
+    if metadata:
+        releases.append(metadata['Version'])
+
+    return releases
+
+
+def get_optimal_version(available_versions, version_constraints: set):
+    """
+    Get the latest version of a package based on version constraints.
+
+    :param available_versions: List of available versions as strings
+    :param version_constraints: Version constraints string
+    :return: Latest version that satisfies the constraints
+    """
+
+    # Convert the version constraints to a string
+    version_list_string = ", ".join(version_constraints)
+
+    version_list_string = version_list_string.replace('*', '')
+
+    try:
+        specifier_set = SpecifierSet(version_list_string)
+        valid_versions = [Version(v) for v in available_versions if Version(v) in specifier_set]
+    except InvalidVersion:
+        valid_versions = None
+
+    if valid_versions:
+        # Get the latest version that satisfies the constraints
+        optimal_version = str(max(valid_versions))
+
+        # WORKAROUND
+        # Version(v) is using the PEP440 format, which is python.
+        # If we have a version like '0.1-4' in R, it will be formatted as '0.1post4'
+        # We need to convert it back to the R format
+        if optimal_version not in available_versions:
+            optimal_version = optimal_version.replace('.post', '-')
+
+    else:
+        # Not valid version found
+        optimal_version = None
+
+    return optimal_version

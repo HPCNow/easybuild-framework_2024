@@ -63,7 +63,7 @@ from easybuild.framework.easyconfig.easyconfig import get_module_path, letter_di
 from easybuild.framework.easyconfig.format.format import SANITY_CHECK_PATHS_DIRS, SANITY_CHECK_PATHS_FILES
 from easybuild.framework.easyconfig.parser import fetch_parameters_from_easyconfig
 from easybuild.framework.easyconfig.style import MAX_LINE_LENGTH
-from easybuild.framework.easyconfig.tools import dump_env_easyblock, get_paths_for, get_bioconductor_packages, get_pkg_metadata, get_pkg_dependencies
+from easybuild.framework.easyconfig.tools import dump_env_easyblock, get_paths_for, get_bioconductor_packages, get_pkg_metadata, get_pkg_dependencies, get_R_pkg_releases, get_optimal_version
 from easybuild.framework.easyconfig.templates import TEMPLATE_NAMES_EASYBLOCK_RUN_STEP, template_constant_dict
 from easybuild.framework.extension import Extension, resolve_exts_filter_template
 from easybuild.tools import LooseVersion, config, run
@@ -168,12 +168,13 @@ class EasyBlock(object):
 
         # extensions
         self.exts = []
-        self.exts_updated = []
         self.exts_completed = []
+        self.exts_updated = []
         self.exts_all = None
         self.ext_instances = []
         self.skip = None
         self.module_extra_extensions = ''  # extra stuff for module file required by extensions
+
 
         # indicates whether or not this instance represents an extension or not;
         # may be set to True by ExtensionEasyBlock
@@ -2974,62 +2975,141 @@ class EasyBlock(object):
 
     def _process_R_dependencies(self, ext, bioconductor_packages=None, exclude_list=None):
         """
-        Process the dependencies of the given R package.
-
-        :param ext: extension data
-        :param bioconductor_packages: list of Bioconductor packages
-        :param processed: processed extensions
+        Complete the extensions list.
         """
+
+        # Init variables
+        processed_pkg = None
+        name = ext['name']
+        version = ext['version']
+
+        # Check if we already have the extension version in the list
+        for dep in self.exts_completed:
+            if dep['name'] == name:
+                # Store the dependency reference
+                processed_pkg = dep
+                break
+        
+        # Check if the package has already been processed
+        if processed_pkg:
+            # Add the version constraint
+            processed_pkg['version_constraints'].add(version)
+
+            # Get the values of the package
+            releases = processed_pkg['releases']
+            version_constraints = processed_pkg['version_constraints']
+
+            # Get the optimal version of the package to process
+            version = get_optimal_version(releases, version_constraints)
+
+            if not version:
+                raise EasyBuildError(f"No valid version found:\nPackage name:{name}\nVersion constraints: {version_constraints}\nReleases: {releases}")
+
+            # If package already in the list with the same version, then skip
+            if processed_pkg['version'] == version:
+                return
+        else:
+            # Get all the releases of the R package
+            releases = get_R_pkg_releases(name, bioconductor_packages)
+
+            # Get the optimal version of the package to process
+            version = get_optimal_version(releases, {version})
 
         # Get metadata of the extension
         metadata = get_pkg_metadata(pkg_class="RPackage",
-                                    pkg_name=ext['name'],
-                                    pkg_version=ext['version'],
+                                    pkg_name=name,
+                                    pkg_version=version,
                                     bioconductor_packages=bioconductor_packages)
         
-        # Get dependencies of the package
+        # If no metadata, the store the extension in the list and return
+        if not metadata:
+            print_warning("Metadata not found for package %s v%s" % (name, version))
+            if not processed_pkg:
+                self.exts_completed.append(ext)
+            return
+        
+        # Get dependencies of the extension
         dependencies = get_pkg_dependencies(pkg_class="RPackage",
                                             metadata=metadata)
-
-        # If dependencies, then process them via recursive call
-        for dep_name, dep_version in dependencies:
-                    
-            # Build the package
-            pkg = {"name": dep_name, "version": dep_version, "options": {"checksums": []}}
-
-            # Clean the package values
-            self._clean_pkg_values(pkg)
-
-            # If already processed, then skip
-            if any(processed['name'] == pkg['name'] for processed in self.exts_completed):
-                continue
-
-            # If in exclude list, then skip
-            if pkg['name'] in exclude_list:
-                continue
-            
-            # TODO:vmachado: Discuss this with Danilo
-            # Always look for latest version of the dependency
-            pkg['version'] = None
-
-            # Process the package dependency
-            self._process_R_dependencies(pkg, bioconductor_packages, exclude_list)
-
+        
         # Get metadata of the values
         name, version, checksum = self._get_metadata_values(metadata, "RPackage")
 
-        # Build the package
-        pkg = {"name": name,
-                "version": version,
-                "options": {"checksums": [checksum]}}
+        # If package already processed then update. Otherwise, create it.
+        if processed_pkg:
+            processed_pkg['name'] = name
+            processed_pkg['version'] = version
+            processed_pkg['options']['checksums'] = [checksum]
+
+        else:
+            # Build the package
+            processed_pkg = {"name": name,
+                       "version": version,
+                       "options": {"checksums": [checksum]},
+                       "version_constraints": {ext['version']},
+                       "dependencies": set(),
+                       "releases": releases}
+
+        # Process dependencies
+        for dep_name, dep_version in dependencies:
+
+            # Format dependency as a package
+            pkg = {"name": dep_name, "version": dep_version, "options": {"checksums": []}}
+
+            # Clean the dependency values
+            self._clean_pkg_values(pkg)
+
+            # If dependency in the exclude list, then skip
+            if pkg['name'] in exclude_list:
+                continue
+
+            # Add the dependency to the current package dependencies
+            processed_pkg['dependencies'].add(pkg['name'])
+
+            # Process the dependency
+            self._process_R_dependencies(pkg, bioconductor_packages, exclude_list)
+
+                    
+        # Append the processed package to the list
+        self.exts_completed.append(processed_pkg)
+
+    def _clean_and_order_exts_completed(self):
+        """
+        Clean the list of dependencies of unneded packages.
+        Order the list of dependencies to surpas corner cases
+        E.g.: a dependency was stored then updated due to version constraints and the dependencies of the first stored version changed
+        """
+
+        self.final_exts_completed = []
+
+        def get_pkg(name):
+            """
+            Retrieve the package with the given name from the completed extensions.
+            """
+            for dep in self.exts_completed:
+                if dep['name'] == name:
+                    return dep
+            return None
+
+        def process_deps(pkg, processed = {}):
+            """
+            Recursively get and process the dependencies of the given package.
+            """
+            for dep_name in pkg['dependencies']:
+                dep = get_pkg(dep_name)
+                if dep['name'] not in processed:
+                    process_deps(dep, processed)
+
+            processed.add(pkg['name'])
+            self.final_exts_completed.append(pkg)
+
+        processed = set()
+        for ext in self.exts:
+            pkg = get_pkg(ext['name']) 
+            process_deps(pkg, processed)
+
+        self.exts_completed = self.final_exts_completed
         
-        # Clean the package values
-        self._clean_pkg_values(pkg)
-
-        # Store the dependency
-        self.exts_completed.append(pkg)
-
-
     def complete_exts_list(self):
         """
         Complete the extensions list with its dependencies in correct order. Store it in the instance variable.
@@ -3051,10 +3131,21 @@ class EasyBlock(object):
             print()
 
             for ext in self.exts:
-                self._process_R_dependencies(ext, bioconductor_packages, exclude_list)
+                # Build the extension dependency tree. ancor the version
+                extension = {"name": ext['name'],
+                             "version": f"=={ext['version']}",
+                             "options": {"checksums": []}}
+
+                # Process the extension
+                self._process_R_dependencies(extension, bioconductor_packages, exclude_list)
 
             # Aesthetic print
             print()
+
+            # Clean the list of dependencies of unneded packages.
+            # Order the list of dependencies to surpas corner cases
+            # Start from the original list of extensions and check its dependencies
+            self._clean_and_order_exts_completed()
 
         else:
             raise NotImplementedError
@@ -3131,7 +3222,7 @@ class EasyBlock(object):
 
         return exts_formatted
 
-    def update_easyconfig_exts_list(self, exts_list):
+    def _write_exts_list_easyconfig(self, exts_list):
         """
         Write a new easyconfig file with the given extensions list.
         """
@@ -3143,6 +3234,20 @@ class EasyBlock(object):
         ectxt = regex.sub('\n'.join(exts_list_formatted), read_file(self.cfg.path))
 
         write_file(self.cfg.path, ectxt)
+
+    def write_completed_exts_list_easyconfig(self):
+        """
+        Write a new easyconfig with completed exts_list.
+        """
+
+        self._write_exts_list_easyconfig(self.exts_completed)
+
+    def write_updated_exts_list_easyconfig(self):
+        """
+        Write a new easyconfig with updated exts_list.
+        """
+
+        self._write_exts_list_easyconfig(self.exts_updated)
 
     def update_exts_progress_bar(self, info, progress_size=0, total=None):
         """
@@ -5167,7 +5272,7 @@ def update_exts_list(ecs):
 
         # Write the new easyconfig file
         print_msg('Writing updated EasyConfig file...', log=_log)
-        app.update_easyconfig_exts_list(app.exts_updated)
+        app.write_updated_exts_list_easyconfig()
 
         # Print success message
         print_msg('New easyConfig file written successfully!', log=_log)
@@ -5207,12 +5312,12 @@ def complete_exts_list(ecs):
         app.complete_exts_list()
 
         # Write the new easyconfig file
-        ec_backup = back_up_file(ec['spec'], backup_extension='bak_update')
+        ec_backup = back_up_file(ec['spec'], backup_extension='bak_complete')
         print_msg("Backing up EasyConfig file at %s..." % ec_backup, log=_log)
 
         # Write the new easyconfig file
         print_msg('Writing completed EasyConfig file...', log=_log)
-        app.update_easyconfig_exts_list(app.exts_completed)
+        app.write_completed_exts_list_easyconfig()
 
         # Print success message
         print_msg('New easyConfig file written successfully!', log=_log)
