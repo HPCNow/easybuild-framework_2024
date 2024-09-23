@@ -289,7 +289,7 @@ class EasyBlock(object):
         if self.dry_run:
             self.init_dry_run()
 
-        self.bioconductor_version = self._set_bioconductor_version()
+        self.bioconductor_version = fetch_parameters_from_easyconfig(self.cfg.rawtxt, ["local_biocver"])[0]
 
         self.log.info("Init completed for application name %s version %s" % (self.name, self.version))
 
@@ -327,40 +327,6 @@ class EasyBlock(object):
         if self.dry_run:
             self.dry_run_msg("*** DRY RUN using '%s' easyblock (%s @ %s) ***\n", eb_class, eb_mod_name, eb_mod_loc)
 
-    def _set_bioconductor_version(self):
-        """
-        Set the Bioconductor version from the EasyConfig instance
-        """
-
-        # Check ec name and version
-        if self.name == 'R-bundle-Bioconductor':
-            if self.version:
-                return self.version
-
-        # Check local variables
-        bioc_versions = fetch_parameters_from_easyconfig(self.cfg.rawtxt, ["local_biocver", "local_bioc_version"])
-        for bioc_version in bioc_versions:
-            if bioc_version is not None:
-                return bioc_version
-
-        # Check dependencies
-        for dep in self.cfg.all_dependencies:
-            if "R-bundle-Bioconductor" in dep['name']:
-                return dep['version']
-
-        # Check exts_default_options
-        exts_default_options = self.cfg.get_ref('exts_default_options')
-        if exts_default_options:
-            source_urls = exts_default_options.get('source_urls', [])
-            for url in source_urls:
-                if 'bioconductor.org/packages/' in url:
-                    parts = url.split('bioconductor.org/packages/')
-                    if len(parts) > 1:
-                        version_part = parts[1].split('/')[0]
-                        return version_part
-
-        # Return None if Bioconductor version is not found
-        return None
 
     def close_log(self):
         """
@@ -2527,6 +2493,7 @@ class EasyBlock(object):
             bioconductor_packages = get_bioconductor_packages(self.bioconductor_version)
             print_msg(f"Using Bioconductor v{self.bioconductor_version}", log=_log)
         else:
+            print_warning("local_biocver parameter not set in easyconfig. Bioconductor packages will not be considered.", log=_log)
             bioconductor_packages = None
 
         # List of packages to exclude from the dependencies
@@ -2656,8 +2623,14 @@ class EasyBlock(object):
         Update extensions list with updated versions and store it in the instance variable.
         """
 
-        # Get the bioconductor packages (if applicable)
-        bioconductor_packages = get_bioconductor_packages(self.bioconductor_version)
+        if self.cfg['exts_defaultclass'] == "RPackage":
+            if self.bioconductor_version:
+                print_msg(f"Using Bioconductor v{self.bioconductor_version}", log=_log)
+                # Get the bioconductor packages (if applicable)
+                bioconductor_packages = get_bioconductor_packages(self.bioconductor_version)
+            else:
+                print_warning("local_biocver parameter not set in easyconfig. Bioconductor packages will not be considered.", log=_log)
+                bioconductor_packages = None
 
         # Aesthetic print
         print()
@@ -5572,7 +5545,7 @@ def complete_exts_list(ecs):
 
         # Complete the exts_list
         print_msg("Completing extension list...", log=_log)
-         app.complete_exts_list()
+        app.complete_exts_list()
 
         # Write the new easyconfig file
         ec_backup = back_up_file(ec['spec'], backup_extension='bak_complete')
