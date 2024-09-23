@@ -49,6 +49,8 @@ import json
 import os
 import re
 import stat
+import subprocess
+import sys
 import tempfile
 import time
 import traceback
@@ -174,7 +176,6 @@ class EasyBlock(object):
         self.ext_instances = []
         self.skip = None
         self.module_extra_extensions = ''  # extra stuff for module file required by extensions
-
 
         # indicates whether or not this instance represents an extension or not;
         # may be set to True by ExtensionEasyBlock
@@ -331,35 +332,24 @@ class EasyBlock(object):
         Set the Bioconductor version from the EasyConfig instance
         """
 
-        easyconfig_dict = {}
-        ectxt = read_file(self.cfg.path)
-        exec(ectxt, {}, easyconfig_dict)
+        # Check ec name and version
+        if self.name == 'R-bundle-Bioconductor':
+            if self.version:
+                return self.version
 
-        # Check ec name
-        name = easyconfig_dict.get('name', None)
-        if name == 'R-bundle-Bioconductor':
-            version = easyconfig_dict.get('version', None)
-            if version:
-                return version
-
-        # Check local variable
-        local_biocver = easyconfig_dict.get('local_biocver', None)
-        if local_biocver:
-            return local_biocver
-
-        # Check local variable
-        local_bioc_version = easyconfig_dict.get('local_bioc_version', None)
-        if local_bioc_version:
-            return local_bioc_version
+        # Check local variables
+        bioc_versions = fetch_parameters_from_easyconfig(self.cfg.rawtxt, ["local_biocver", "local_bioc_version"])
+        for bioc_version in bioc_versions:
+            if bioc_version is not None:
+                return bioc_version
 
         # Check dependencies
-        dependencies = easyconfig_dict.get('dependencies', [])
-        for dep in dependencies:
-            if "R-bundle-Bioconductor" in dep:
-                return dep["R-bundle-Bioconductor"]
+        for dep in self.cfg.all_dependencies:
+            if "R-bundle-Bioconductor" in dep['name']:
+                return dep['version']
 
         # Check exts_default_options
-        exts_default_options = easyconfig_dict.get('exts_default_options', {})
+        exts_default_options = self.cfg.get_ref('exts_default_options')
         if exts_default_options:
             source_urls = exts_default_options.get('source_urls', [])
             for url in source_urls:
@@ -2142,6 +2132,624 @@ class EasyBlock(object):
                     running_ext_names = ', '.join(x.name for x in running_exts[:3]) + ", ..."
                 print_msg(msg % (installed_cnt, exts_cnt, queued_cnt, running_cnt, running_ext_names), log=self.log)
 
+    def _get_python_package_checksum(self, pkg_data, pkg_version):
+        """
+        Get the checksum of the given Python package.
+
+        :param pkg_data: package data
+        :param pkg_version: package version
+        """
+
+        # Initialize variable
+        checksum = ''
+
+        releases = pkg_data.get('releases', {})
+        version_info = releases.get(pkg_version, [])
+
+        if version_info:
+            # Look for sdist first
+            for file_info in version_info:
+                if file_info.get('packagetype') == 'sdist':
+                    checksum = file_info.get('digests', {}).get('sha256', '')
+
+            # If no sdist found, take the checksum of the first distribution file
+            if not checksum:
+                checksum = version_info[0].get('digests', {}).get('sha256', '')
+
+        return checksum
+
+    def _get_dependencies_from_pypi_output(self, output):
+        """
+        Get the dependencies from the output of "pip install --dry-run".
+        
+        :param output: the output of "pip install --dry-run"
+        """
+        
+        # Initialize return value
+        dependencies = []
+
+        # Parse the output to get the dependencies
+        lines = output.stdout.splitlines()
+
+        for line in lines:
+            if line.startswith('Would install'):
+                # Patter to search for versioned packages
+                pattern = r'([\w\.-]+)-((\d+!)?\d+(\.\d+)*([abc]\d+)?(\.post\d+)?(\.dev\d+)?(\+\w+(\.\w+)*)?)'
+
+                # Find all matches in the input string
+                matches = re.findall(pattern, line)
+
+                # Convert matches to a list of tuples (package, version)
+                dependencies = [(match[0], match[1]) for match in matches]
+
+                # We found the line, break the loop
+                break
+
+        # # Delete ext from the list of dependencies
+        # dependencies = [dep for dep in dependencies if dep[0].lower() != ext['name'].lower()]
+
+        return dependencies
+
+    def _get_python_pkg_dependencies(self, pip_path, ext):
+
+        # Initialize return value
+        dependencies = []
+
+        # Get extension dependencies for the specified version by running "pip install --dry-run" and parse the output
+        if ext['version']:
+            try:
+                result = subprocess.run([pip_path, 'install', '--dry-run', f"{ext['name']}=={ext['version']}"],
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE,
+                                        text=True,
+                                        check=True)
+            except (SystemExit, subprocess.CalledProcessError, Exception) as e:
+                print_warning(f"Failed to get dependencies for {ext['name']}=={ext['version']}. Trying to get latest release...", log=_log)
+                result = None
+
+        # if no version specified or failed to get dependencies, try to get dependencies for the latest version
+        if not ext['version'] or not result:
+            try:
+                result = subprocess.run([pip_path, 'install', '--dry-run', f"{ext['name']}"],
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE,
+                                        text=True,
+                                        check=True)
+
+            except (SystemExit, subprocess.CalledProcessError, Exception) as e:
+                print_error(f"Failed to get dependencies for {ext['name']}", log=_log)
+                result = None
+
+        if result:
+
+            dependencies = self._get_dependencies_from_pypi_output(result)
+
+        # # Delete ext from the list of dependencies
+        # dependencies = [dep for dep in dependencies if dep[0].lower() != ext['name'].lower()]
+
+        return dependencies
+
+    def _get_metadata_values(self, metadata, exts_defaultclass):
+
+        if exts_defaultclass == "RPackage":
+            name = metadata.get('Package', '')
+            version = metadata.get('Version', '')
+            checksum = metadata.get('MD5sum', '')
+
+        elif exts_defaultclass == "PythonPackage":
+            name = metadata.get('info', {}).get('name', '')
+            version = metadata.get('info', {}).get('version', '')
+            checksum = self._get_python_package_checksum(metadata, version)
+
+        else:
+            raise NotImplementedError
+
+        return name, version, checksum
+
+    def _clean_pkg_values(self, pkg):
+        """
+        Clean the given ext name and version and checksum.
+
+        :param pkg: extension data
+        """
+        allowed_version_chars = r'[^0-9><=!*. \-]'
+
+        # Regular expression pattern to match versions like 'RSQLite (>= 2.0)'
+        pattern = r'^(?P<name>[^\s]+) \((?P<info>.+)\)$'
+        match = re.match(pattern, pkg['name'])
+
+        if match:
+            pkg['name'] = match.group('name')
+            pkg['version'] = match.group('info')
+
+        # Remove any non-alphanumeric characters from the version
+        if pkg['version']:
+            pkg['version'] = re.sub(allowed_version_chars, '', pkg['version'])
+
+        # Remove any new line characters from the name, version and checksum
+        pkg['name'] = pkg['name'].replace('\n', '')
+        pkg['version'] = pkg['version'].replace('\n', '')
+        checksum = pkg['options']['checksums']
+        if checksum:
+            pkg['options']['checksums'] = [checksum[0].replace('\n', '')]
+
+    def _process_R_dependencies(self, ext, bioconductor_packages=None, exclude_list=None):
+        """
+        Process the dependencies of the given R package.
+
+        :param ext: the extension to process
+        :param bioconductor_packages: the list of Bioconductor packages (if any)
+        :param exclude_list: the list of packages to exclude (if any)
+        """
+
+        # Init variables
+        processed_pkg = None
+        name = ext['name']
+        version = ext['version']
+
+        # Check if we already have the extension version in the list
+        for dep in self.exts_completed:
+            if dep['name'] == name:
+                # Store the dependency reference
+                processed_pkg = dep
+                break
+
+        # Check if the package has already been processed
+        if processed_pkg:
+            # Add the version constraint
+            processed_pkg['version_constraints'].add(version)
+
+            # Get the values of the package
+            releases = processed_pkg['releases']
+            version_constraints = processed_pkg['version_constraints']
+
+            # Get the optimal version of the package to process
+            version = get_optimal_version(releases, version_constraints)
+
+            if not version:
+                raise EasyBuildError(
+                    f"No valid version found:\nPackage name:{name}\nVersion constraints: {version_constraints}\nReleases: {releases}")
+
+            # If package already in the list with the same version, then skip
+            if processed_pkg['version'] == version:
+                return
+        else:
+            # Get all the releases of the R package
+            releases = get_R_pkg_releases(name, bioconductor_packages)
+
+            # Get the optimal version of the package to process
+            version = get_optimal_version(releases, {version})
+
+        # Get metadata of the extension
+        metadata = get_pkg_metadata(pkg_class="RPackage",
+                                    pkg_name=name,
+                                    pkg_version=version,
+                                    bioconductor_packages=bioconductor_packages)
+
+        # If no metadata, the store the extension in the list and return
+        if not metadata:
+            print_warning("Metadata not found for package %s v%s" % (name, version))
+            if not processed_pkg:
+                self.exts_completed.append(ext)
+            return
+
+        # Get dependencies of the extension
+        dependencies = get_pkg_dependencies(pkg_class="RPackage",
+                                            metadata=metadata)
+
+        # Get metadata of the values
+        name, version, checksum = self._get_metadata_values(metadata, "RPackage")
+
+        # If package already processed then update. Otherwise, create it.
+        if processed_pkg:
+            processed_pkg['name'] = name
+            processed_pkg['version'] = version
+            processed_pkg['options']['checksums'] = [checksum]
+
+        else:
+            # Build the package
+            processed_pkg = {"name": name,
+                             "version": version,
+                             "options": {"checksums": [checksum]},
+                             "version_constraints": {ext['version']},
+                             "dependencies": set(),
+                             "releases": releases}
+
+        # Process dependencies
+        for dep_name, dep_version in dependencies:
+
+            # Format dependency as a package
+            pkg = {"name": dep_name, "version": dep_version, "options": {"checksums": []}}
+
+            # Clean the dependency values
+            self._clean_pkg_values(pkg)
+
+            # If dependency in the exclude list, then skip
+            if pkg['name'] in exclude_list:
+                continue
+
+            # Add the dependency to the current package dependencies
+            processed_pkg['dependencies'].add(pkg['name'])
+
+            # Process the dependency
+            self._process_R_dependencies(pkg, bioconductor_packages, exclude_list)
+
+        # Append the processed package to the list
+        self.exts_completed.append(processed_pkg)
+
+        # Print message
+        print_msg(f"Processed package {processed_pkg['name']} v{processed_pkg['version']}", log=_log)
+
+    def _process_python_dependencies(self, pip_path, ext):
+        """
+        Process the dependencies of the given Python extension.
+
+        :param pip_path: the path to the pip executable
+        :param ext: the extension to process
+        """
+
+        # Check if extension has already been processed.
+        for pkg in self.exts_completed:
+            if pkg['name'] == ext['name']:
+                return
+
+        # Get the package dependencies
+        dependencies = self._get_python_pkg_dependencies(pip_path, ext)
+
+        # Process dependencies
+        for dep_name, dep_version in dependencies:
+
+            # Skip the extension itself
+            if dep_name.lower() == ext['name'].lower():
+                continue
+
+            # Format dependency as extension
+            pkg = {"name": dep_name,
+                   "version": dep_version,
+                   "options": {"checksums": []},
+                   "original": False} # Mark as not original extension in exts_list
+
+            # Clean the package values
+            self._clean_pkg_values(pkg)
+
+            # Process the dependency
+            self._process_python_dependencies(pip_path, pkg)
+
+        # Get metadata of the extension
+        metadata = get_pkg_metadata(pkg_class="PythonPackage",
+                                    pkg_name=ext['name'],
+                                    pkg_version=ext['version'])
+        
+        # Process the metadata to update the extension values
+        if metadata:
+
+            # Get metadata of the values
+            name, version, checksum = self._get_metadata_values(metadata, "PythonPackage")
+
+            # Build the package
+            pkg = {"name": name,
+                   "version": version,
+                   "options": {"checksums": [checksum]},
+                   "original": ext['original']}
+
+            # Clean the package values
+            self._clean_pkg_values(pkg)
+            
+            # Append the processed package to the list
+            self.exts_completed.append(pkg)
+
+            # Print message
+            print_msg(f"Processed package {pkg['name']} v{pkg['version']}", log=_log)
+
+        else:
+            # No metadata found, store the extension as is in the list
+            self.exts_completed.append(ext)
+            
+            # Print message
+            print_msg(f"Processed package {ext['name']} v{ext['version']}", log=_log)
+
+    def _sanitize_R_exts_completed(self):
+        """
+        Clean the list of dependencies of unneded packages.
+        Order the list of dependencies to surpas corner cases
+        E.g.: a dependency was stored then updated due to version constraints and the dependencies of the first stored version changed
+        """
+
+        self.final_exts_completed = []
+
+        def get_pkg(name):
+            """
+            Retrieve the package with the given name from the completed extensions.
+            """
+            for dep in self.exts_completed:
+                if dep['name'] == name:
+                    return dep
+            return None
+
+        def process_deps(pkg, processed={}):
+            """
+            Recursively get and process the dependencies of the given package.
+            """
+            for dep_name in pkg['dependencies']:
+                dep = get_pkg(dep_name)
+                if dep['name'] not in processed:
+                    process_deps(dep, processed)
+
+            processed.add(pkg['name'])
+            self.final_exts_completed.append(pkg)
+
+        processed = set()
+        for ext in self.exts:
+            pkg = get_pkg(ext['name'])
+            process_deps(pkg, processed)
+
+        self.exts_completed = self.final_exts_completed
+
+    def _sanitize_python_exts_completed(self, pip_path):
+        """
+        Get the final versions of the python exts_completed list.
+        """
+
+        # Get the original extensions from the completed exts_list
+        original_packages = [pkg for pkg in self.exts_completed if pkg["original"]]
+        
+        # Construct the argument list
+        args = [pip_path, 'install', '--dry-run'] + \
+            [f"{ext['name']}=={ext['version']}" for ext in original_packages]
+        try:
+            result = subprocess.run(args,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE,
+                                    text=True,
+                                    check=True)
+
+        except (SystemExit, subprocess.CalledProcessError, Exception) as e:
+            raise ValueError(e.stderr, log=_log)
+
+        # Get the final packages versions to install
+        final_versions = self._get_dependencies_from_pypi_output(result)
+
+        # Convert the list of tuples to a dictionary
+        final_versions = {pkg: version for pkg, version in final_versions}
+
+        for pkg in self.exts_completed:
+            if pkg['name'] in final_versions:
+                if pkg['version'] != final_versions[pkg['name']]:
+                    pkg['version'] = final_versions[pkg['name']]
+
+    def _complete_R_exts_list(self):
+        """
+        Complete the R extensions list with its dependencies in correct order. Store it in the instance variable.
+        """
+
+        if self.bioconductor_version:
+            # Get the bioconductor packages
+            bioconductor_packages = get_bioconductor_packages(self.bioconductor_version)
+            print_msg(f"Using Bioconductor v{self.bioconductor_version}", log=_log)
+        else:
+            bioconductor_packages = None
+
+        # List of packages to exclude from the dependencies
+        exclude_list = ['R', 'base', 'compiler', 'datasets', 'graphics',
+                        'grDevices', 'grid', 'methods', 'parallel',
+                        'splines', 'stats', 'stats4', 'tcltk', 'tools',
+                        'utils', 'MASS']
+
+        # Aesthetic print
+        print()
+
+        for ext in self.exts:
+            # Build the extension package.
+            # Versions of the original exts_list will not be changed
+            extension = {"name": ext['name'],
+                         "version": f"=={ext['version']}",
+                         "options": {"checksums": []}}
+
+            # Process the extension
+            self._process_R_dependencies(extension, bioconductor_packages, exclude_list)
+
+        # Aesthetic print
+        print()
+
+        # Clean the list of dependencies of unneded packages.
+        # Order the list of dependencies to surpas corner cases
+        # Start from the original list of extensions and check its dependencies
+        print_msg(f"Sanitizing completed R exts_list...", log=_log)
+        self._sanitize_R_exts_completed()
+
+    def _complete_python_exts_list(self):
+        """
+        Complete the python extensions list with its dependencies in correct order.
+        Store it in the instance variable.
+        This will be achieved by creating a virtual environment and using "pip install --dry-run <packages>"" to get dependencies.
+        """
+
+        # Create a virtual env and use "pip install --dry-run <packages>"" to get dependencies
+        with tempfile.TemporaryDirectory() as temp_env:
+
+            # Create virtual environment
+            print_msg(f"Creating virtual environment...", log=_log)
+            try:
+                subprocess.run([sys.executable, '-m', 'venv', temp_env],
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE,
+                               check=True)
+            except subprocess.CalledProcessError as e:
+                raise ValueError(f"Failed create virtual environment: {e.stderr.decode().strip()}.", log=_log)
+            print_msg(f"Using virtual environment created at {temp_env}...", log=_log)
+
+            # Get venv pip path
+            pip_path = os.path.join(temp_env, 'bin', 'pip')
+
+            # Upgrade pip
+            print_msg(f"Upgrading the virtual environment's pip...", log=_log)
+            try:
+                subprocess.run([pip_path, 'install', '--upgrade', 'pip'],
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE,
+                               check=True)
+            except subprocess.CalledProcessError as e:
+                raise ValueError(f"Failed to upgrade pip: {e.stderr.decode().strip()}.", log=_log)
+        
+            # Get pip version
+            try:
+                result = subprocess.run([pip_path, '--version'],
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE,
+                                        check=True)
+            except subprocess.CalledProcessError as e:
+                raise ValueError(f"Failed to get pip version: {e.stderr.decode().strip()}.", log=_log)
+            print_msg("Using %s" % (result.stdout.decode().strip()), log=_log)
+
+            # Check if current pip version supports --dry-run
+            try:
+                result = subprocess.run([pip_path, 'install', '--help'], check=True,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            except subprocess.CalledProcessError as e:
+                raise ValueError(f"Failed to check if pip supports --dry-run: {e.stderr.decode().strip()}.", log=_log)
+
+            if not '--dry-run' in result.stdout.decode():
+                print_error("Current pip version does not support --dry-run.", log=_log)
+                return
+
+            # Aesthetic print
+            print('')
+
+            # We will call pip install --dry-run with all the extensions.
+            # We could call pip install --dry-run just once with all extensions but it will lose the order of the dependencies, 
+            # as the output of the command is ordered alphabetically. We will call pip install --dry-run for each extension to 
+            # get the correct order of the dependencies. Then we will sanitize the versions of the dependencies.
+            for ext in self.exts:
+                # Build the extension package.
+                extension = {"name": ext['name'],
+                            "version": ext['version'],
+                            "options": {"checksums": []},
+                            "original": True} # Mark as original extension in exts_list
+
+                # Process the python extension
+                self._process_python_dependencies(pip_path, extension)
+
+            # Aesthetic print
+            print('')
+
+            # At this point we have processed all dependencies for each exts list.
+            # An extension dependency is stored in the list above the extension that requires it with the correct version.
+            # However, we need to check that all dependencies version constraints for all extensions are met.
+            # We will call pip install --dry-run with all the original extensions to get the final version to install.
+            print_msg(f"Sanitizing completed Python exts_list...", log=_log)
+            self._sanitize_python_exts_completed(pip_path)
+
+    def complete_exts_list(self):
+        """
+        Complete the extensions list with its dependencies in correct order. Store it in the instance variable.
+        """
+
+        if self.cfg['exts_defaultclass'] == "RPackage":
+            self._complete_R_exts_list()
+        elif self.cfg['exts_defaultclass'] == "PythonPackage":
+            self._complete_python_exts_list()
+        else:
+            raise NotImplementedError
+
+    def update_exts_list(self):
+        """
+        Update extensions list with updated versions and store it in the instance variable.
+        """
+
+        # Get the bioconductor packages (if applicable)
+        bioconductor_packages = get_bioconductor_packages(self.bioconductor_version)
+
+        # Aesthetic print
+        print()
+
+        for ext in self.exts:
+
+            # Get metadata of the extension
+            metadata = get_pkg_metadata(pkg_class=self.cfg['exts_defaultclass'],
+                                        pkg_name=ext['name'],
+                                        pkg_version=None,
+                                        bioconductor_packages=bioconductor_packages)
+
+            # Process the metadata
+            if metadata:
+                name, version, checksum = self._get_metadata_values(metadata, self.cfg['exts_defaultclass'])
+
+                # Build the package
+                pkg = {"name": name,
+                       "version": version,
+                       "options": {"checksums": [checksum]}}
+
+                # Clean the package values
+                self._clean_pkg_values(pkg)
+
+                # Store the updated extension
+                self.exts_updated.append(pkg)
+
+                # Print message to the user
+                if ext['version'] == pkg['version']:
+                    print_msg(f"Package {ext['name']:<{20}} v{ext['version']:<{10}} {'up-to-date':<{20}}", log=_log)
+                else:
+                    print_msg(
+                        f"Package {ext['name']:<{20}} v{ext['version']:<{10}} updated to {pkg['version']:<{20}}", log=_log)
+
+            else:
+                # Store the original extension
+                self.exts_updated.append(ext)
+
+                # Print message to the user
+                print_msg(f"Package {ext['name']:<{20}} v{ext['version']:<{10}} {'info not found':<{20}}", log=_log)
+
+        # Aesthetic print
+        print()
+
+    def _format_exts_list(self, exts_list):
+        """
+        Format the extensions list to match easyconfig standards and store it in the instance variable.
+        """
+
+        # Init variables
+        exts_formatted = ['exts_list = [']
+
+        for ext in exts_list:
+            exts_formatted.append("%s('%s', '%s', {" % (INDENT_4SPACES, ext['name'], ext['version']))
+            for key, value in ext['options'].items():
+                if type(value) == str:
+                    exts_formatted.append("%s'%s': '%s'," % (INDENT_4SPACES * 2, key, value))
+                else:
+                    exts_formatted.append("%s'%s': %s," % (INDENT_4SPACES * 2, key, value))
+            exts_formatted.append('%s}),' % (INDENT_4SPACES,))
+
+        exts_formatted.append(']\n')
+
+        return exts_formatted
+
+    def _write_exts_list_easyconfig(self, exts_list):
+        """
+        Write a new easyconfig file with the given extensions list.
+        """
+
+        # Format the extension's dependencies to match EasyConfig format
+        exts_list_formatted = self._format_exts_list(exts_list)
+
+        regex = re.compile(r'^exts_list(.|\n)*?\n\]\s*$', re.M)
+        ectxt = regex.sub('\n'.join(exts_list_formatted), read_file(self.cfg.path))
+
+        write_file(self.cfg.path, ectxt)
+
+    def write_completed_exts_list_easyconfig(self):
+        """
+        Write a new easyconfig with completed exts_list.
+        """
+
+        self._write_exts_list_easyconfig(self.exts_completed)
+
+    def write_updated_exts_list_easyconfig(self):
+        """
+        Write a new easyconfig with updated exts_list.
+        """
+
+        self._write_exts_list_easyconfig(self.exts_updated)
+
     #
     # MISCELLANEOUS UTILITY FUNCTIONS
     #
@@ -2902,352 +3510,6 @@ class EasyBlock(object):
             pbar_label = "creating internal datastructures for extensions "
             pbar_label += "(%d/%d done)" % (idx + 1, exts_cnt)
             self.update_exts_progress_bar(pbar_label)
-
-    def _get_python_package_checksum(self, pkg_data, pkg_version):
-        """
-        Get the checksum of the given Python package.
-
-        :param pkg_data: package data
-        :param pkg_version: package version
-        """
-
-        # Initialize variable
-        checksum = ''
-
-        releases = pkg_data.get('releases', {})
-        version_info = releases.get(pkg_version, [])
-
-        if version_info:
-            # Look for sdist first
-            for file_info in version_info:
-                if file_info.get('packagetype') == 'sdist':
-                    checksum = file_info.get('digests', {}).get('sha256', '')
-
-            # If no sdist found, take the checksum of the first distribution file
-            if not checksum:
-                checksum = version_info[0].get('digests', {}).get('sha256', '')
-
-        return checksum
-
-    def _get_metadata_values(self, metadata, exts_defaultclass):
-
-        if exts_defaultclass == "RPackage":
-            name = metadata.get('Package', '')
-            version = metadata.get('Version', '')
-            checksum = metadata.get('MD5sum', '')
-
-        elif exts_defaultclass == "PythonPackage":
-            name = metadata.get('info', {}).get('name', '')
-            version = metadata.get('info', {}).get('version', '')
-            checksum = self._get_python_package_checksum(metadata, version)
-
-        else:
-            raise NotImplementedError
-
-        return name, version, checksum
-    
-    def _clean_pkg_values(self, pkg):
-        """
-        Clean the given ext name and version and checksum.
-
-        :param pkg: extension data
-        """
-        allowed_version_chars = r'[^0-9><=!*. \-]'
-
-        # Regular expression pattern to match versions like 'RSQLite (>= 2.0)'
-        pattern = r'^(?P<name>[^\s]+) \((?P<info>.+)\)$'
-        match = re.match(pattern, pkg['name'])
-
-        if match:
-            pkg['name'] = match.group('name')
-            pkg['version'] = match.group('info')
-
-        # Remove any non-alphanumeric characters from the version
-        if pkg['version']:
-            pkg['version'] = re.sub(allowed_version_chars, '', pkg['version'])
-
-        # Remove any new line characters from the name, version and checksum
-        pkg['name'] = pkg['name'].replace('\n', '')
-        pkg['version'] = pkg['version'].replace('\n', '')
-        checksum = pkg['options']['checksums']
-        if checksum:
-            pkg['options']['checksums'] = [checksum[0].replace('\n', '')]
-
-    def _process_R_dependencies(self, ext, bioconductor_packages=None, exclude_list=None):
-        """
-        Complete the extensions list.
-        """
-
-        # Init variables
-        processed_pkg = None
-        name = ext['name']
-        version = ext['version']
-
-        # Check if we already have the extension version in the list
-        for dep in self.exts_completed:
-            if dep['name'] == name:
-                # Store the dependency reference
-                processed_pkg = dep
-                break
-        
-        # Check if the package has already been processed
-        if processed_pkg:
-            # Add the version constraint
-            processed_pkg['version_constraints'].add(version)
-
-            # Get the values of the package
-            releases = processed_pkg['releases']
-            version_constraints = processed_pkg['version_constraints']
-
-            # Get the optimal version of the package to process
-            version = get_optimal_version(releases, version_constraints)
-
-            if not version:
-                raise EasyBuildError(f"No valid version found:\nPackage name:{name}\nVersion constraints: {version_constraints}\nReleases: {releases}")
-
-            # If package already in the list with the same version, then skip
-            if processed_pkg['version'] == version:
-                return
-        else:
-            # Get all the releases of the R package
-            releases = get_R_pkg_releases(name, bioconductor_packages)
-
-            # Get the optimal version of the package to process
-            version = get_optimal_version(releases, {version})
-
-        # Get metadata of the extension
-        metadata = get_pkg_metadata(pkg_class="RPackage",
-                                    pkg_name=name,
-                                    pkg_version=version,
-                                    bioconductor_packages=bioconductor_packages)
-        
-        # If no metadata, the store the extension in the list and return
-        if not metadata:
-            print_warning("Metadata not found for package %s v%s" % (name, version))
-            if not processed_pkg:
-                self.exts_completed.append(ext)
-            return
-        
-        # Get dependencies of the extension
-        dependencies = get_pkg_dependencies(pkg_class="RPackage",
-                                            metadata=metadata)
-        
-        # Get metadata of the values
-        name, version, checksum = self._get_metadata_values(metadata, "RPackage")
-
-        # If package already processed then update. Otherwise, create it.
-        if processed_pkg:
-            processed_pkg['name'] = name
-            processed_pkg['version'] = version
-            processed_pkg['options']['checksums'] = [checksum]
-
-        else:
-            # Build the package
-            processed_pkg = {"name": name,
-                       "version": version,
-                       "options": {"checksums": [checksum]},
-                       "version_constraints": {ext['version']},
-                       "dependencies": set(),
-                       "releases": releases}
-
-        # Process dependencies
-        for dep_name, dep_version in dependencies:
-
-            # Format dependency as a package
-            pkg = {"name": dep_name, "version": dep_version, "options": {"checksums": []}}
-
-            # Clean the dependency values
-            self._clean_pkg_values(pkg)
-
-            # If dependency in the exclude list, then skip
-            if pkg['name'] in exclude_list:
-                continue
-
-            # Add the dependency to the current package dependencies
-            processed_pkg['dependencies'].add(pkg['name'])
-
-            # Process the dependency
-            self._process_R_dependencies(pkg, bioconductor_packages, exclude_list)
-
-                    
-        # Append the processed package to the list
-        self.exts_completed.append(processed_pkg)
-
-    def _clean_and_order_exts_completed(self):
-        """
-        Clean the list of dependencies of unneded packages.
-        Order the list of dependencies to surpas corner cases
-        E.g.: a dependency was stored then updated due to version constraints and the dependencies of the first stored version changed
-        """
-
-        self.final_exts_completed = []
-
-        def get_pkg(name):
-            """
-            Retrieve the package with the given name from the completed extensions.
-            """
-            for dep in self.exts_completed:
-                if dep['name'] == name:
-                    return dep
-            return None
-
-        def process_deps(pkg, processed = {}):
-            """
-            Recursively get and process the dependencies of the given package.
-            """
-            for dep_name in pkg['dependencies']:
-                dep = get_pkg(dep_name)
-                if dep['name'] not in processed:
-                    process_deps(dep, processed)
-
-            processed.add(pkg['name'])
-            self.final_exts_completed.append(pkg)
-
-        processed = set()
-        for ext in self.exts:
-            pkg = get_pkg(ext['name']) 
-            process_deps(pkg, processed)
-
-        self.exts_completed = self.final_exts_completed
-        
-    def complete_exts_list(self):
-        """
-        Complete the extensions list with its dependencies in correct order. Store it in the instance variable.
-        """
-
-        if self.cfg['exts_defaultclass'] == "RPackage":
-            # Get the bioconductor packages (if applicable)
-            bioconductor_packages = get_bioconductor_packages(self.bioconductor_version)
-
-            # List of packages to exclude from the dependencies
-            exclude_list = ['R', 'base', 'compiler', 'datasets', 'graphics',
-                            'grDevices', 'grid', 'methods', 'parallel',
-                            'splines', 'stats', 'stats4', 'tcltk', 'tools',
-                            'utils', 'MASS']
-            
-            #TODO:vmachado: expand Exclude list with depedency dependencies
-
-            # Aesthetic print
-            print()
-
-            for ext in self.exts:
-                # Build the extension dependency tree. ancor the version
-                extension = {"name": ext['name'],
-                             "version": f"=={ext['version']}",
-                             "options": {"checksums": []}}
-
-                # Process the extension
-                self._process_R_dependencies(extension, bioconductor_packages, exclude_list)
-
-            # Aesthetic print
-            print()
-
-            # Clean the list of dependencies of unneded packages.
-            # Order the list of dependencies to surpas corner cases
-            # Start from the original list of extensions and check its dependencies
-            self._clean_and_order_exts_completed()
-
-        else:
-            raise NotImplementedError
-
-    def update_exts_list(self):
-        """
-        Update extensions list with updated versions and store it in the instance variable.
-        """
-
-        # Get the bioconductor packages (if applicable)
-        bioconductor_packages = get_bioconductor_packages(self.bioconductor_version)
-
-        # Aesthetic print
-        print()
-
-        for ext in self.exts:
-
-            # Get metadata of the extension
-            metadata = get_pkg_metadata(pkg_class=self.cfg['exts_defaultclass'],
-                                        pkg_name=ext['name'],
-                                        pkg_version=None,
-                                        bioconductor_packages=bioconductor_packages)
-
-            # Process the metadata
-            if metadata:
-                name, version, checksum = self._get_metadata_values(metadata, self.cfg['exts_defaultclass'])
-
-                # Build the package
-                pkg = {"name": name,
-                       "version": version,
-                       "options": {"checksums": [checksum]}}
-                
-                # Clean the package values
-                self._clean_pkg_values(pkg)
-
-                # Store the updated extension
-                self.exts_updated.append(pkg)
-
-                # Print message to the user
-                if ext['version'] == pkg['version']:
-                    print_msg(f"Package {ext['name']:<{20}} v{ext['version']:<{10}} {'up-to-date':<{20}}", log=_log)
-                else:
-                    print_msg(
-                        f"Package {ext['name']:<{20}} v{ext['version']:<{10}} updated to {pkg['version']:<{20}}", log=_log)
-
-            else:
-                # Store the original extension
-                self.exts_updated.append(ext)
-
-                # Print message to the user
-                print_msg(f"Package {ext['name']:<{20}} v{ext['version']:<{10}} {'info not found':<{20}}", log=_log)
-
-        # Aesthetic print
-        print()
-
-    def _format_exts_list(self, exts_list):
-        """
-        Format the extensions list to match easyconfig standards and store it in the instance variable.
-        """
-
-        # Init variables
-        exts_formatted = ['exts_list = [']
-
-        for ext in exts_list:
-            exts_formatted.append("%s('%s', '%s', {" % (INDENT_4SPACES, ext['name'], ext['version']))
-            for key, value in ext['options'].items():
-                if type(value) == str:
-                    exts_formatted.append("%s'%s': '%s'," % (INDENT_4SPACES * 2, key, value))
-                else:
-                    exts_formatted.append("%s'%s': %s," % (INDENT_4SPACES * 2, key, value))
-            exts_formatted.append('%s}),' % (INDENT_4SPACES,))
-
-        exts_formatted.append(']\n')
-
-        return exts_formatted
-
-    def _write_exts_list_easyconfig(self, exts_list):
-        """
-        Write a new easyconfig file with the given extensions list.
-        """
-
-        # Format the extension's dependencies to match EasyConfig format
-        exts_list_formatted = self._format_exts_list(exts_list)
-
-        regex = re.compile(r'^exts_list(.|\n)*?\n\]\s*$', re.M)
-        ectxt = regex.sub('\n'.join(exts_list_formatted), read_file(self.cfg.path))
-
-        write_file(self.cfg.path, ectxt)
-
-    def write_completed_exts_list_easyconfig(self):
-        """
-        Write a new easyconfig with completed exts_list.
-        """
-
-        self._write_exts_list_easyconfig(self.exts_completed)
-
-    def write_updated_exts_list_easyconfig(self):
-        """
-        Write a new easyconfig with updated exts_list.
-        """
-
-        self._write_exts_list_easyconfig(self.exts_updated)
 
     def update_exts_progress_bar(self, info, progress_size=0, total=None):
         """
@@ -5233,6 +5495,7 @@ def inject_checksums(ecs, checksum_type):
 
         write_file(ec['spec'], ectxt)
 
+
 def update_exts_list(ecs):
     """
     Write a new EasyConfig recipie with the updated exts_list
@@ -5309,7 +5572,7 @@ def complete_exts_list(ecs):
 
         # Complete the exts_list
         print_msg("Completing extension list...", log=_log)
-        app.complete_exts_list()
+         app.complete_exts_list()
 
         # Write the new easyconfig file
         ec_backup = back_up_file(ec['spec'], backup_extension='bak_complete')
