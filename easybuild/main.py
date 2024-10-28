@@ -535,13 +535,11 @@ def process_eb_args(eb_args, eb_go, cfg_settings, modtool, testing, init_session
             inject_checksums_to_json(ordered_ecs, options.inject_checksums_to_json)
 
     elif options.complete_exts_list:
-        with rich_live_cm():
-            complete_exts_list(ordered_ecs)
+        complete_exts_list(ordered_ecs)
         return True
     
     elif options.update_exts_list:
-        with rich_live_cm():
-            update_exts_list(ordered_ecs)
+        update_exts_list(ordered_ecs)
         return True
 
     # cleanup and exit after dry run, searching easyconfigs or submitting regression test

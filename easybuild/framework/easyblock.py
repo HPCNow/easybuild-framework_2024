@@ -62,10 +62,11 @@ from easybuild.base import fancylogger
 from easybuild.framework.easyconfig import EASYCONFIGS_PKG_SUBDIR
 from easybuild.framework.easyconfig.easyconfig import ITERATE_OPTIONS, EasyConfig, ActiveMNS, get_easyblock_class
 from easybuild.framework.easyconfig.easyconfig import get_module_path, letter_dir_for, resolve_template
+from easybuild.framework.easyconfig.easyconfig import process_easyconfig
 from easybuild.framework.easyconfig.format.format import SANITY_CHECK_PATHS_DIRS, SANITY_CHECK_PATHS_FILES
 from easybuild.framework.easyconfig.parser import fetch_parameters_from_easyconfig
 from easybuild.framework.easyconfig.style import MAX_LINE_LENGTH
-from easybuild.framework.easyconfig.tools import dump_env_easyblock, get_paths_for, get_bioconductor_packages, get_pkg_metadata, get_pkg_dependencies, get_R_pkg_releases, get_optimal_version
+from easybuild.framework.easyconfig.tools import dump_env_easyblock, get_paths_for, get_bioconductor_packages, get_pkg_metadata, get_pkg_dependencies, get_R_pkg_releases, get_optimal_version, is_version_valid
 from easybuild.framework.easyconfig.templates import TEMPLATE_NAMES_EASYBLOCK_RUN_STEP, template_constant_dict
 from easybuild.framework.extension import Extension, resolve_exts_filter_template
 from easybuild.tools import LooseVersion, config, run
@@ -74,7 +75,7 @@ from easybuild.tools.build_log import EasyBuildError, dry_run_msg, dry_run_warni
 from easybuild.tools.build_log import print_error, print_msg, print_warning
 from easybuild.tools.config import CHECKSUM_PRIORITY_JSON, DEFAULT_ENVVAR_USERS_MODULES
 from easybuild.tools.config import FORCE_DOWNLOAD_ALL, FORCE_DOWNLOAD_PATCHES, FORCE_DOWNLOAD_SOURCES
-from easybuild.tools.config import build_option, build_path, get_log_filename, get_repository, get_repositorypath
+from easybuild.tools.config import build_option, update_build_option, build_path, get_log_filename, get_repository, get_repositorypath
 from easybuild.tools.config import install_path, log_path, package_path, source_paths
 from easybuild.tools.environment import restore_env, sanitize_env
 from easybuild.tools.filetools import CHECKSUM_TYPE_MD5, CHECKSUM_TYPE_SHA256
@@ -101,12 +102,12 @@ from easybuild.tools.output import show_progress_bars, start_progress_bar, stop_
 from easybuild.tools.package.utilities import package
 from easybuild.tools.py2vs3 import extract_method_name, string_type
 from easybuild.tools.repository.repository import init_repository
+from easybuild.tools.robot import search_easyconfigs
 from easybuild.tools.systemtools import check_linked_shared_libs, det_parallelism, get_linked_libs_raw
 from easybuild.tools.systemtools import get_shared_lib_ext, pick_system_specific_value, use_group
 from easybuild.tools.utilities import INDENT_4SPACES, get_class_for, nub, quote_str
 from easybuild.tools.utilities import remove_unwanted_chars, time2str, trace_msg
 from easybuild.tools.version import this_is_easybuild, VERBOSE_VERSION, VERSION
-
 
 EASYBUILD_SOURCES_URL = 'https://sources.easybuild.io'
 
@@ -2239,7 +2240,7 @@ class EasyBlock(object):
         if checksum:
             pkg['options']['checksums'] = [checksum[0].replace('\n', '')]
 
-    def _process_R_dependencies(self, ext, bioconductor_packages=None, exclude_list=None):
+    def _process_R_dependencies(self, ext, bioconductor_packages=None, exclude_list=None, exts_by_deps=None):
         """
         Process the dependencies of the given R package.
 
@@ -2254,10 +2255,10 @@ class EasyBlock(object):
         version = ext['version']
 
         # Check if we already have the extension version in the list
-        for dep in self.exts_completed:
-            if dep['name'] == name:
+        for ext_dep in self.exts_completed:
+            if ext_dep['name'] == name:
                 # Store the dependency reference
-                processed_pkg = dep
+                processed_pkg = ext_dep
                 break
 
         # Check if the package has already been processed
@@ -2267,6 +2268,8 @@ class EasyBlock(object):
 
             # Get the values of the package
             releases = processed_pkg['releases']
+
+            # Get version constraints of the package
             version_constraints = processed_pkg['version_constraints']
 
             # Get the optimal version of the package to process
@@ -2283,8 +2286,26 @@ class EasyBlock(object):
             # Get all the releases of the R package
             releases = get_R_pkg_releases(name, bioconductor_packages)
 
+            # Get version constraints of the package
+            version_constraints = version
+
             # Get the optimal version of the package to process
             version = get_optimal_version(releases, {version})
+
+        # Check if the package is already being installed by a dependency
+        num = 1
+        for dep in exts_by_deps:
+            print(num)
+            num += 1
+            ext_dep_name = dep.get('name')
+            ext_dep_version = dep.get('version')
+            if ext_dep_name == name:
+                if is_version_valid(ext_dep_version, {version_constraints}):
+                    print_msg(f"The package {name} version {version} is already being installed by a dependency.")
+                    return
+                break
+
+
 
         # Get metadata of the extension
         metadata = get_pkg_metadata(pkg_class="RPackage",
@@ -2338,7 +2359,7 @@ class EasyBlock(object):
             processed_pkg['dependencies'].add(pkg['name'])
 
             # Process the dependency
-            self._process_R_dependencies(pkg, bioconductor_packages, exclude_list)
+            self._process_R_dependencies(pkg, bioconductor_packages, exclude_list, exts_by_deps)
 
         # Append the processed package to the list
         self.exts_completed.append(processed_pkg)
@@ -2358,6 +2379,18 @@ class EasyBlock(object):
         for pkg in self.exts_completed:
             if pkg['name'] == ext['name']:
                 return
+
+        # Check if the package is already being installed by a dependency
+        for ext_dep in self.exts_by_deps:
+            if ext_dep.get('name') == ext['name']:
+                if ext_dep.get('version') == ext['version']:
+                    print_msg(
+                        f"The package {ext['name']} version {ext['version']} is already being installed by a dependency.")
+                    return
+                else:
+                    print_warning(
+                        f"We are processing the package {ext['name']} v{ext['version']} but package {ext['name']} v{ext_dep.get('version')} is already being installed by a dependency.")
+                break
 
         # Get the package dependencies
         dependencies = self._get_python_pkg_dependencies(pip_path, ext)
@@ -2427,6 +2460,9 @@ class EasyBlock(object):
             """
             Retrieve the package with the given name from the completed extensions.
             """
+            if not name:
+                return None
+
             for dep in self.exts_completed:
                 if dep['name'] == name:
                     return dep
@@ -2436,7 +2472,10 @@ class EasyBlock(object):
             """
             Recursively get and process the dependencies of the given package.
             """
-            for dep_name in pkg['dependencies']:
+            if not pkg:
+                return None
+
+            for dep_name in pkg.get('dependencies', []):
                 dep = get_pkg(dep_name)
                 if dep['name'] not in processed:
                     process_deps(dep, processed)
@@ -2502,8 +2541,10 @@ class EasyBlock(object):
                         'splines', 'stats', 'stats4', 'tcltk', 'tools',
                         'utils', 'MASS']
 
-        # Aesthetic print
-        print()
+        # Search for extensions installed by dependenciees
+        print_msg("Searching for extensions installed by dependencies...", log=_log)
+        exts_by_deps = []
+        self._search_exts_by_dependencies(exts_by_deps)
 
         for ext in self.exts:
             # Build the extension package.
@@ -2513,10 +2554,7 @@ class EasyBlock(object):
                          "options": {"checksums": []}}
 
             # Process the extension
-            self._process_R_dependencies(extension, bioconductor_packages, exclude_list)
-
-        # Aesthetic print
-        print()
+            self._process_R_dependencies(extension, bioconductor_packages, exclude_list, exts_by_deps)
 
         # Clean the list of dependencies of unneded packages.
         # Order the list of dependencies to surpas corner cases
@@ -2579,6 +2617,10 @@ class EasyBlock(object):
                 print_error("Current pip version does not support --dry-run.", log=_log)
                 return
 
+            # Search for extensions installed by dependenciees
+            print_msg("Searching for extensions installed by dependencies...", log=_log)
+            self._search_exts_by_dependencies()
+            
             # Aesthetic print
             print('')
 
@@ -3483,6 +3525,72 @@ class EasyBlock(object):
             pbar_label = "creating internal datastructures for extensions "
             pbar_label += "(%d/%d done)" % (idx + 1, exts_cnt)
             self.update_exts_progress_bar(pbar_label)
+
+    def _search_exts_by_dependencies(self, exts_by_deps = [], processed_deps = []):
+        """
+        Generate a list of extensions that will be pre-installed due to dependencies or build_dependencies specified in the easyconfig parameters.
+        """
+
+        # get list of dependencies and build dependencies
+        deps = self.cfg.dependencies()
+
+        # Set terse mode to avoid printing unnecessary information
+        terse = build_option('terse')
+        update_build_option('terse', True)
+
+        for dep in deps:
+            # Get dependency name
+            name = dep['full_mod_name'].replace('/', '-')
+
+            # Check if dependency was already processed
+            if name in processed_deps:
+                continue
+
+            # Add dependency to the list of processed dependencies
+            processed_deps.append(name)
+
+            # If dependency is a system dependency, store it as an extension being installed and skip futher processing
+            if dep['system']:
+                exts_by_deps.extend([{'name': dep['name'], 'version': dep['version']}])
+                continue
+
+            # print()
+            # print_msg("Easyconfig file:       %s", self.cfg.path)
+            # print_msg("Easyconfig dependency: %s", name)
+
+            # Search for the corresponding easyconfig file
+            easyconfigs = search_easyconfigs(name, print_result=False)
+
+            if easyconfigs:
+
+                if len(easyconfigs) > 1:
+                    print_warning("More than one easyconfig file found for dependency %s: %s", name, easyconfigs)
+                # Skip if is not an easyconfig recipie
+                if not easyconfigs[0].endswith(".eb"):
+                    continue
+
+                # Read the easyconfig file
+                ec = process_easyconfig(easyconfigs[0], validate=False)[0]
+
+                # Get the EasyBlock instance
+                app: EasyBlock = get_easyblock_instance(ec)
+
+                # Search for pre-installed extensions of the dependency 
+                app._search_exts_by_dependencies(exts_by_deps, processed_deps)
+
+                # NOTE: Cannot use init_ext_instances() as some parameters of found easyconfig file may not be set
+                # and we do not have power over those files
+                # app.init_ext_instances()
+
+                # Get the extensions of the dependency
+                exts = app.collect_exts_file_info(fetch_files=False, verify_checksums=False)
+
+                # Add extensions to the list
+                exts_by_deps.extend(exts)
+
+        # Restore the original value of the terse option
+        update_build_option('terse', terse)
+
 
     def update_exts_progress_bar(self, info, progress_size=0, total=None):
         """
@@ -5483,7 +5591,7 @@ def update_exts_list(ecs):
         python3 -m venv .venv
         . .venv/bin/activate
         pip install -r requirements.txt
-        pip install easybuild-easyblocks
+        pip install easybuild-easyblocks easybuild-easyconfigs
         pip install -e .
         python3 easybuild/main.py "your-eb-recipie-path" --update-exts-list
     """
@@ -5528,7 +5636,7 @@ def complete_exts_list(ecs):
         python3 -m venv .venv
         . .venv/bin/activate
         pip install -r requirements.txt
-        pip install easybuild-easyblocks
+        pip install easybuild-easyblocks easybuild-easyconfigs
         pip install -e .
         python3 easybuild/main.py "your-eb-recipie-path" --complete-exts-list
     """

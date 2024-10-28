@@ -1096,3 +1096,14 @@ def get_optimal_version(available_versions, version_constraints: set):
         optimal_version = None
 
     return optimal_version
+
+def is_version_valid(version, version_constraints):
+    """
+    Check if the version satisfies the constraints
+
+    :param version: Version string
+    :param version_constraints: Version constraints string
+    :return: True if the version satisfies the constraints, False otherwise
+    """
+
+    return get_optimal_version([version], version_constraints) == version
