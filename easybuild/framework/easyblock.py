@@ -4888,7 +4888,8 @@ def get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=Non
 
         # get the name and version of the extension
         if isinstance(ext, str):
-            ext_name = ext
+            updated_exts_list.append(ext)
+            continue
         elif isinstance(ext, tuple):
             ext_name, ext_version, ext_options = ext
         else:
