@@ -72,7 +72,7 @@ from easybuild.tools.build_log import EasyBuildError, dry_run_msg, dry_run_warni
 from easybuild.tools.build_log import print_error, print_msg, print_warning
 from easybuild.tools.config import CHECKSUM_PRIORITY_JSON, DEFAULT_ENVVAR_USERS_MODULES
 from easybuild.tools.config import FORCE_DOWNLOAD_ALL, FORCE_DOWNLOAD_PATCHES, FORCE_DOWNLOAD_SOURCES
-from easybuild.tools.config import EASYBUILD_SOURCES_URL # noqa
+from easybuild.tools.config import EASYBUILD_SOURCES_URL  # noqa
 from easybuild.tools.config import build_option, build_path, get_log_filename, get_repository, get_repositorypath
 from easybuild.tools.config import install_path, log_path, package_path, source_paths
 from easybuild.tools.environment import restore_env, sanitize_env
@@ -4850,10 +4850,11 @@ def inject_checksums(ecs, checksum_type):
 
         write_file(ec['spec'], ectxt)
 
+
 def get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=None):
     """
     Get a new exts_list with all extensions in exts_list to the latest version.
-    
+
     :param exts_defaultclass: default class for the extensions ('RPackage', 'PythonPackage', 'PerlPackage', etc.)
     :param exts_list: list of extensions to be updated
     :param bioconductor_version: version of Bioconductor to use (if any)
@@ -4868,7 +4869,7 @@ def get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=Non
     # check if the exts_defaultclass is empty
     if not exts_defaultclass:
         raise EasyBuildError("No default class found for the extensions")
-    
+
     # init variables
     updated_exts_list = []
 
@@ -4888,8 +4889,9 @@ def get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=Non
 
         # get the name and version of the extension
         if isinstance(ext, str):
-            updated_exts_list.append(ext)
-            continue
+            ext_name = ext
+            new_ext = {"name": ext_name, "version": ext_version,  "options": ext_options}
+            updated_exts_list.append((ext_name, ext_version, ext_options))
         elif isinstance(ext, tuple):
             ext_name, ext_version, ext_options = ext
         else:
@@ -4928,6 +4930,7 @@ def get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=Non
     print()
 
     return updated_exts_list
+
 
 def write_new_easyconfig_exts_list(path, new_exts_list):
     """
@@ -4971,6 +4974,7 @@ def write_new_easyconfig_exts_list(path, new_exts_list):
     # write the new easyconfig file
     write_file(path, ectxt)
 
+
 def get_exts_list(ec):
     """
     Get the extension list from an EasyConfig instance.
@@ -4979,6 +4983,7 @@ def get_exts_list(ec):
     """
 
     return ec.get('ec', {}).get('exts_list', None)
+
 
 def get_exts_list_class(ec):
     """
@@ -4998,6 +5003,7 @@ def get_exts_list_class(ec):
 
     return exts_list_class
 
+
 def get_bioconductor_version(ec):
     """
     Get the Bioconductor version from an EasyConfig instance.
@@ -5013,6 +5019,7 @@ def get_bioconductor_version(ec):
         print_msg("'local_biocver' parameter not set in easyconfig. Bioconductor packages will not be considered...", log=_log)
 
     return bioconductor_version
+
 
 def update_exts_list(ecs):
     """
