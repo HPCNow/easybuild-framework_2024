@@ -4973,6 +4973,7 @@ def write_new_easyconfig_exts_list(path, new_exts_list):
     # write the new easyconfig file
     write_file(path, ectxt)
 
+
 def get_dependencies(ec):
     """
     Get the dependencies from an EasyConfig instance.
@@ -4982,6 +4983,7 @@ def get_dependencies(ec):
     app: EasyBlock = get_easyblock_instance(ec)
     return app.cfg.dependencies()
 
+
 def get_exts_list(ec):
     """
     Get the extension list from an EasyConfig instance.
@@ -4990,6 +4992,7 @@ def get_exts_list(ec):
     """
 
     return ec.get('ec', {}).get('exts_list', None)
+
 
 def get_exts_list_class(ec):
     """
@@ -5009,6 +5012,7 @@ def get_exts_list_class(ec):
 
     return exts_list_class
 
+
 def get_bioconductor_version(ec):
     """
     Get the Bioconductor version from an EasyConfig instance.
@@ -5024,6 +5028,7 @@ def get_bioconductor_version(ec):
         print_msg("'local_biocver' parameter not set in easyconfig. Bioconductor packages will not be considered...", log=_log)
 
     return bioconductor_version
+
 
 def get_extension_values(extension):
     """
@@ -5054,6 +5059,7 @@ def get_extension_values(extension):
     else:
         raise EasyBuildError("Invalid extension instance")
 
+
 def crosscheck_exts_list(exts_list, installed_exts):
     """
     Cross-check the exts_list with the list of installed extensions.
@@ -5077,17 +5083,18 @@ def crosscheck_exts_list(exts_list, installed_exts):
         for inst_ext in installed_exts:
 
             # get the name and version of the installed extension
-            inst_ext_name, inst_ext_version, _ = get_extension_values(inst_ext)
+            inst_ext_name, inst_ext_version, path = get_extension_values(inst_ext)
 
             # check if the extension is already installed by a dependency
             if inst_ext_name.lower() == ext_name.lower():
                 match = True
                 print_msg("%s v%s  in exts_list" % (ext_name, ext_version), log=_log)
-                print_msg("%s v%s  in dependency\n" % (inst_ext_name, inst_ext_version), log=_log)
+                print_msg("%s v%s  in dependency %s\n" % (inst_ext_name, inst_ext_version, path), log=_log)
                 break
 
     if not match:
         print_msg("No installed extensions found in the exts_list!\n", log=_log)
+
 
 def get_installed_exts(ec, processed_deps=[]):
     """
@@ -5138,22 +5145,25 @@ def get_installed_exts(ec, processed_deps=[]):
             # Process the easyconfig file
             dep_ec = process_easyconfig(easyconfigs[0], validate=False)[0]
 
+            # get the exts_list dependency easyconfig
+            exts_list = get_exts_list(dep_ec)
+
+            for e in exts_list:
+                en, ev, _ = get_extension_values(e)
+                installed_exts.append((en, ev, dep_ec['spec']))
+
             # Search recursively for pre-installed extensions of the dependency
             installed = get_installed_exts(dep_ec, processed_deps)
 
-            # Add extensions to the list
-            installed_exts.extend(installed)
-
-    # get the exts_list of current easyconfig
-    exts_list = get_exts_list(ec)
-
-    # add extensions to the list
-    installed_exts.extend(exts_list)
+            for e in installed:
+                en, ev, _ = get_extension_values(e)
+                installed_exts.append((en, ev, dep_ec['spec']))
 
     # restore the original value of the terse option
     update_build_option('terse', terse)
 
     return installed_exts
+
 
 def update_exts_list(ecs):
     """
@@ -5194,6 +5204,7 @@ def update_exts_list(ecs):
 
         # success message
         print_msg('EASYCONFIG SUCCESSFULLY UPDATED!\n', log=_log)
+
 
 def check_installed_exts(ecs):
     """
