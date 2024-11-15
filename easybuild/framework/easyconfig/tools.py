@@ -918,21 +918,20 @@ def det_copy_ec_specs(orig_paths, from_pr=None, from_commit=None):
     return paths, target_path
 
 
-def calculate_md5(package):
+def calculate_md5(data):
     """
-    Calculate the MD5 checksum of the given package
+    Calculate the MD5 checksum of the given data
 
-    :param package: package to calculate the checksum for
+    :param data: data to calculate the checksum for
+
+    :return: MD5 checksum of the given data
     """
 
-    if not package:
+    if not data:
         return ''
 
     md5_hash = hashlib.md5()
-
-    for chunk in package.iter_content(chunk_size=8192):
-        if chunk:
-            md5_hash.update(chunk)
+    md5_hash.update(data)
 
     return md5_hash.hexdigest()
 
@@ -943,6 +942,8 @@ def get_R_pkg_checksum(pkg_metadata, bioconductor_version=None):
 
     :param pkg_metadata: package metadata
     :param bioconductor_version: Bioconductor version
+
+    :return: checksum of the given R package version
     """
 
     # check if checksum is provided in the metadata
@@ -953,7 +954,7 @@ def get_R_pkg_checksum(pkg_metadata, bioconductor_version=None):
         pkg_version = pkg_metadata.get('Version', '')
 
         package = get_pkg('RPackage', pkg_name, pkg_version, bioconductor_version)
-        checksum = calculate_md5(package)
+        checksum = calculate_md5(data=package)
 
     return checksum
 
@@ -963,6 +964,8 @@ def get_python_pkg_checksum(pkg_metadata):
     Get the checksum of the given Python package version
 
     :param pkg_metadata: package metadata
+
+    :return: checksum of the given Python package version
     """
 
     # initialize variable
@@ -987,11 +990,13 @@ def get_python_pkg_checksum(pkg_metadata):
     return checksum
 
 
-def get_bioconductor_packages(bioc_version):
+def get_bioconductor_pkgs_metadata(bioc_version):
     """
     Get the list of Bioconductor packages from the Bioconductor database.
 
     :param bioc_version: Bioconductor version
+
+    :return: list of Bioconductor packages
     """
 
     # global variable to store the bioconductor packages
@@ -1036,6 +1041,8 @@ def get_pkg(pkg_class, pkg_name, pkg_version, bioconductor_version=None):
     : param pkg_name: package name
     : param pkg_version: package version
     : param bioconductor_version: bioconductor version (if any)
+
+    : return: package from database
     """
 
     urls = []
@@ -1049,7 +1056,7 @@ def get_pkg(pkg_class, pkg_name, pkg_version, bioconductor_version=None):
         # URL for CRANDB Archive
         crandb_archive_url = "%s/Archive/%s/%s_%s.tar.gz" % (CRANDB_CONTRIB_URL, pkg_name, pkg_name, pkg_version)
         urls.append(crandb_archive_url)
-        
+
         # URL for Bioconductor package
         if bioconductor_version:
             # Construct the URL for Bioconductor package
@@ -1057,7 +1064,7 @@ def get_pkg(pkg_class, pkg_name, pkg_version, bioconductor_version=None):
                                                            bioconductor_version, pkg_name, pkg_version)
             urls.append(url)
     else:
-        raise EasyBuildError("Get package only supported for RPackage for now")
+        raise EasyBuildError("get_pkg function only supports RPackage extensions")
 
     try:
         for url in urls:
@@ -1065,7 +1072,7 @@ def get_pkg(pkg_class, pkg_name, pkg_version, bioconductor_version=None):
             response = requests.get(url, stream=True)
 
             if response.status_code == 200:
-                return response
+                return response.content
 
     except Exception as err:
         print_warning("Exception while downloading package %s v%s. Error: %s" % (pkg_name, pkg_version, err))
@@ -1081,6 +1088,8 @@ def get_pkg_metadata(pkg_class, pkg_name, pkg_version=None, bioc_version=None):
     :param pkg_name: package name
     :param pkg_version: package version. If None, the latest version will be retrieved.
     :param bioc_version: bioconductor version
+
+    :return: package metadata
     """
 
     # initialize variables
@@ -1096,7 +1105,7 @@ def get_pkg_metadata(pkg_class, pkg_name, pkg_version=None, bioc_version=None):
 
         # get bioc packages if bioconductor version is provided
         if bioc_version:
-            bioc_packages = get_bioconductor_packages(bioc_version)
+            bioc_packages = get_bioconductor_pkgs_metadata(bioc_version)
 
     elif pkg_class == "PythonPackage":
         url = "%s/%s/json" % (PYPI_URL, pkg_name)
@@ -1125,13 +1134,15 @@ def get_pkg_metadata(pkg_class, pkg_name, pkg_version=None, bioc_version=None):
     return pkg_metadata
 
 
-def get_metadata_as_extension(pkg_class, pkg_metadata, bioconductor_version=None):
+def format_metadata_as_extension(pkg_class, pkg_metadata, bioconductor_version=None):
     """
     Get the package metada as an exts_list extension format
 
     :param pkg_class: package class (RPackage, PythonPackage, PerlPackage)
     :param pkg_metadata: package metadata
     :param bioconductor_version: bioconductor version
+
+    :return: package metadata in exts_list extension format
     """
 
     # if no metadata is provided, return None
