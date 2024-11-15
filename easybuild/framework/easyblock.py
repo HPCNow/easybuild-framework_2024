@@ -63,7 +63,7 @@ from easybuild.framework.easyconfig.easyconfig import get_module_path, letter_di
 from easybuild.framework.easyconfig.format.format import SANITY_CHECK_PATHS_DIRS, SANITY_CHECK_PATHS_FILES
 from easybuild.framework.easyconfig.parser import fetch_parameters_from_easyconfig
 from easybuild.framework.easyconfig.style import MAX_LINE_LENGTH
-from easybuild.framework.easyconfig.tools import dump_env_easyblock, get_paths_for, get_pkg_metadata, get_pkg_as_extension
+from easybuild.framework.easyconfig.tools import dump_env_easyblock, get_paths_for, get_pkg_metadata, get_metadata_as_extension
 from easybuild.framework.easyconfig.templates import TEMPLATE_NAMES_EASYBLOCK_RUN_STEP, template_constant_dict
 from easybuild.framework.extension import Extension, resolve_exts_filter_template
 from easybuild.tools import LooseVersion, config, run
@@ -4864,11 +4864,11 @@ def get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=Non
 
     # check if the exts_list is empty
     if not exts_list:
-        raise EasyBuildError("No extensions found")
+        raise EasyBuildError("No exts_list provided for updating")
 
     # check if the exts_defaultclass is empty
     if not exts_defaultclass:
-        raise EasyBuildError("No default class found for the extensions")
+        raise EasyBuildError("No exts_defaultclass provided for updating")
 
     # init variables
     updated_exts_list = []
@@ -4905,7 +4905,7 @@ def get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=Non
 
         if metadata:
             # process the metadata and get new extension
-            new_ext = get_pkg_as_extension(exts_defaultclass, metadata)
+            new_ext = get_metadata_as_extension(exts_defaultclass, metadata, bioconductor_version)
 
             # print message to the user
             if ext_version == new_ext['version']:
@@ -4982,7 +4982,12 @@ def get_exts_list(ec):
     :param ec: EasyConfig instance
     """
 
-    return ec.get('ec', {}).get('exts_list', None)
+    exts_list = ec.get('ec', {}).get('exts_list', None)
+
+    if not exts_list:
+        raise EasyBuildError("No extension list found in easyconfig")
+
+    return exts_list
 
 
 def get_exts_list_class(ec):
@@ -5001,6 +5006,9 @@ def get_exts_list_class(ec):
             if name == 'Python' or name.startswith('Python-'):
                 exts_list_class = 'PythonPackage'
 
+    if not exts_list_class:
+        raise EasyBuildError("No extension list class found in easyconfig")
+
     return exts_list_class
 
 
@@ -5011,11 +5019,15 @@ def get_bioconductor_version(ec):
     :param ec: EasyConfig instance
     """
 
-    bioconductor_version = ec.get('ec', {}).get('local_biocver', None)
+    # get the Bioconductor version from the easyconfig file
+    rawtxt = getattr(ec['ec'], 'rawtxt', '')
+    match = re.search(r'local_biocver\s*=\s*([0-9.]+)', rawtxt)
 
-    if bioconductor_version:
+    if match:
+        bioconductor_version = match.group(1)
         print_msg("Using Bioconductor v%s..." % (bioconductor_version), log=_log)
     else:
+        bioconductor_version = None
         print_msg("'local_biocver' parameter not set in easyconfig. Bioconductor packages will not be considered...", log=_log)
 
     return bioconductor_version
