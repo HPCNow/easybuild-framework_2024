@@ -4889,9 +4889,8 @@ def get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=Non
 
         # get the name and version of the extension
         if isinstance(ext, str):
-            ext_name = ext
-            new_ext = {"name": ext_name, "version": ext_version,  "options": ext_options}
-            updated_exts_list.append(new_ext)
+            # if the extension is a string, the store it as is and skip further processing
+            updated_exts_list.append({"name": ext, "version": ext_version,  "options": ext_options})
             continue
         elif isinstance(ext, tuple):
             ext_name, ext_version, ext_options = ext
