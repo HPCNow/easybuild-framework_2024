@@ -4895,7 +4895,7 @@ def get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=Non
 
         elif isinstance(ext, tuple):
             # get the values of the exts_list extension
-            ext_name, ext_version, ext_options = ext
+            ext_name, ext_version, ext_options = get_extension_values(ext)
 
         else:
             raise EasyBuildError("Invalid extension format")
