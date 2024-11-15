@@ -63,7 +63,7 @@ from easybuild.framework.easyconfig.easyconfig import get_module_path, letter_di
 from easybuild.framework.easyconfig.format.format import SANITY_CHECK_PATHS_DIRS, SANITY_CHECK_PATHS_FILES
 from easybuild.framework.easyconfig.parser import fetch_parameters_from_easyconfig
 from easybuild.framework.easyconfig.style import MAX_LINE_LENGTH
-from easybuild.framework.easyconfig.tools import dump_env_easyblock, get_paths_for, get_pkg_metadata, get_metadata_as_extension
+from easybuild.framework.easyconfig.tools import dump_env_easyblock, get_paths_for, get_pkg_metadata, format_metadata_as_extension
 from easybuild.framework.easyconfig.templates import TEMPLATE_NAMES_EASYBLOCK_RUN_STEP, template_constant_dict
 from easybuild.framework.extension import Extension, resolve_exts_filter_template
 from easybuild.tools import LooseVersion, config, run
@@ -4885,16 +4885,18 @@ def get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=Non
     # loop over all extensions and update their version
     for ext in exts_list:
 
-        # init variables
-        ext_name, ext_version, ext_options = None, None, None
-
-        # get the name and version of the extension
         if isinstance(ext, str):
             # if the extension is a string, the store it as is and skip further processing
-            updated_exts_list.append({"name": ext, "version": ext_version,  "options": ext_options})
+            updated_exts_list.append({"name": ext, "version": None,  "options": None})
+            # print message to the user
+            print_msg(
+                f"Package {ext:<{PKG_NAME_OFFSET}} v{('---'):<{PKG_VERSION_OFFSET}} {'letf as is':<{INFO_OFFSET}}", log=_log)
             continue
+
         elif isinstance(ext, tuple):
+            # get the values of the exts_list extension
             ext_name, ext_version, ext_options = ext
+
         else:
             raise EasyBuildError("Invalid extension format")
 
@@ -4906,26 +4908,26 @@ def get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=Non
 
         if metadata:
             # process the metadata and get new extension
-            new_ext = get_metadata_as_extension(exts_defaultclass, metadata, bioconductor_version)
+            updated_ext = format_metadata_as_extension(exts_defaultclass, metadata, bioconductor_version)
 
             # print message to the user
-            if ext_version == new_ext['version']:
+            if ext_version == updated_ext['version']:
                 print_msg(
                     f"Package {ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} {'up-to-date':<{INFO_OFFSET}}", log=_log)
             else:
                 print_msg(
-                    f"Package {ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} updated to v{new_ext['version']:<{INFO_OFFSET}}", log=_log)
+                    f"Package {ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} updated to v{updated_ext['version']:<{INFO_OFFSET}}", log=_log)
 
         else:
             # no metadata found, therefore store the original extension
-            new_ext = {"name": ext_name, "version": ext_version,  "options": ext_options}
+            updated_ext = {"name": ext_name, "version": ext_version,  "options": ext_options}
 
             # print message to the user
             print_msg(
                 f"Package {ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} {'info not found':<{INFO_OFFSET}}", log=_log)
 
-        # store the new extension
-        updated_exts_list.append(new_ext)
+        # store the updated extension
+        updated_exts_list.append(updated_ext)
 
     # aesthetic print
     print()
@@ -4991,6 +4993,8 @@ def get_exts_list(ec):
     Get the extension list from an EasyConfig instance.
 
     :param ec: EasyConfig instance
+
+    :return: exts_list of the given EasyConfig instance
     """
 
     exts_list = ec.get('ec', {}).get('exts_list', None)
@@ -5003,9 +5007,11 @@ def get_exts_list(ec):
 
 def get_exts_list_class(ec):
     """
-    Get the extension list class from an EasyConfig instance.
+    Get the exts_defaultclass or deduct it from an EasyConfig instance.
 
     :param ec: EasyConfig instance
+
+    :return: the exts_defaultclass of the given EasyConfig instance
     """
 
     exts_list_class = ec.get('ec', {}).get('exts_defaultclass', None)
@@ -5028,6 +5034,8 @@ def get_bioconductor_version(ec):
     Get the Bioconductor version from an EasyConfig instance.
 
     :param ec: EasyConfig instance
+
+    :return: the Bioconductor version of the given EasyConfig instance (if any)
     """
 
     # get the Bioconductor version from the easyconfig file
