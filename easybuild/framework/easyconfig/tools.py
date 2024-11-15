@@ -41,6 +41,7 @@ Authors:
 import copy
 import fnmatch
 import glob
+import hashlib
 import os
 import re
 import requests
@@ -73,8 +74,9 @@ from easybuild.tools.version import VERSION as EASYBUILD_VERSION
 
 # URLs for package repositories
 CRANDB_URL = "https://crandb.r-pkg.org"
+CRANDB_CONTRIB_URL = "https://cran.r-project.org/src/contrib"
 PYPI_URL = "https://pypi.org/pypi"
-BIOCONDUCTOR_URL = "https://bioconductor.org/packages/json"
+BIOCONDUCTOR_URL = "https://bioconductor.org/packages"
 BIOCONDUCTOR_PKGS_URL = "bioc/packages.json"
 BIOCONDUCTOR_ANNOTATION_URL = "data/annotation/packages.json"
 BIOCONDUCTOR_EXPERIMENT_URL = "data/experiment/packages.json"
@@ -916,20 +918,60 @@ def det_copy_ec_specs(orig_paths, from_pr=None, from_commit=None):
     return paths, target_path
 
 
-def get_python_package_checksum(pkg_metadata, pkg_version):
+def calculate_md5(package):
+    """
+    Calculate the MD5 checksum of the given package
+
+    :param package: package to calculate the checksum for
+    """
+
+    if not package:
+        return ''
+
+    md5_hash = hashlib.md5()
+
+    for chunk in package.iter_content(chunk_size=8192):
+        if chunk:
+            md5_hash.update(chunk)
+
+    return md5_hash.hexdigest()
+
+
+def get_R_pkg_checksum(pkg_metadata, bioconductor_version=None):
+    """
+    Get the checksum of the given R package version
+
+    :param pkg_metadata: package metadata
+    :param bioconductor_version: Bioconductor version
+    """
+
+    # check if checksum is provided in the metadata
+    checksum = pkg_metadata.get('MD5sum', '')
+
+    if not checksum:
+        pkg_name = pkg_metadata.get('Package', '')
+        pkg_version = pkg_metadata.get('Version', '')
+
+        package = get_pkg('RPackage', pkg_name, pkg_version, bioconductor_version)
+        checksum = calculate_md5(package)
+
+    return checksum
+
+
+def get_python_pkg_checksum(pkg_metadata):
     """
     Get the checksum of the given Python package version
 
     :param pkg_metadata: package metadata
-    :param pkg_version: package version
     """
 
     # initialize variable
     checksum = ''
 
     # get the data of the given package version
+    version = pkg_metadata.get('info', {}).get('version', '')
     releases = pkg_metadata.get('releases', {})
-    version_info = releases.get(pkg_version, [])
+    version_info = releases.get(version, [])
 
     # parse the version info to get the checksum
     if version_info:
@@ -960,9 +1002,9 @@ def get_bioconductor_packages(bioc_version):
         return None
 
     # bioconductor URLs
-    bioc_urls = ['%s/%s/%s' % (BIOCONDUCTOR_URL, bioc_version, BIOCONDUCTOR_PKGS_URL),
-                 '%s/%s/%s' % (BIOCONDUCTOR_URL, bioc_version, BIOCONDUCTOR_ANNOTATION_URL),
-                 '%s/%s/%s' % (BIOCONDUCTOR_URL, bioc_version, BIOCONDUCTOR_EXPERIMENT_URL)]
+    bioc_urls = ['%s/json/%s/%s' % (BIOCONDUCTOR_URL, bioc_version, BIOCONDUCTOR_PKGS_URL),
+                 '%s/json/%s/%s' % (BIOCONDUCTOR_URL, bioc_version, BIOCONDUCTOR_ANNOTATION_URL),
+                 '%s/json/%s/%s' % (BIOCONDUCTOR_URL, bioc_version, BIOCONDUCTOR_EXPERIMENT_URL)]
 
     # check if the packages are already stored in memory
     if bioc_packages_cache is None:
@@ -984,6 +1026,51 @@ def get_bioconductor_packages(bioc_version):
                 print_warning(f"Exception while getting bioconductor packages from  {url}: {err}")
 
     return bioc_packages_cache
+
+
+def get_pkg(pkg_class, pkg_name, pkg_version, bioconductor_version=None):
+    """
+    Get the package from the database
+
+    : param pkg_class: package class (RPackage)
+    : param pkg_name: package name
+    : param pkg_version: package version
+    : param bioconductor_version: bioconductor version (if any)
+    """
+
+    urls = []
+
+    # build the url to get the package from the database
+    if pkg_class == "RPackage":
+        # URL for CRANDB
+        crandb_url = "%s/%s_%s.tar.gz" % (CRANDB_CONTRIB_URL, pkg_name, pkg_version)
+        urls.append(crandb_url)
+
+        # URL for CRANDB Archive
+        crandb_archive_url = "%s/Archive/%s/%s_%s.tar.gz" % (CRANDB_CONTRIB_URL, pkg_name, pkg_name, pkg_version)
+        urls.append(crandb_archive_url)
+        
+        # URL for Bioconductor package
+        if bioconductor_version:
+            # Construct the URL for Bioconductor package
+            url = "%s/%s/bioc/src/contrib/%s_%s.tar.gz" % (BIOCONDUCTOR_URL,
+                                                           bioconductor_version, pkg_name, pkg_version)
+            urls.append(url)
+    else:
+        raise EasyBuildError("Get package only supported for RPackage for now")
+
+    try:
+        for url in urls:
+            # get the package's metadata from the database
+            response = requests.get(url, stream=True)
+
+            if response.status_code == 200:
+                return response
+
+    except Exception as err:
+        print_warning("Exception while downloading package %s v%s. Error: %s" % (pkg_name, pkg_version, err))
+
+    return None
 
 
 def get_pkg_metadata(pkg_class, pkg_name, pkg_version=None, bioc_version=None):
@@ -1038,12 +1125,13 @@ def get_pkg_metadata(pkg_class, pkg_name, pkg_version=None, bioc_version=None):
     return pkg_metadata
 
 
-def get_pkg_as_extension(pkg_class, pkg_metadata):
+def get_metadata_as_extension(pkg_class, pkg_metadata, bioconductor_version=None):
     """
-    Get the package as an extension
+    Get the package metada as an exts_list extension format
 
     :param pkg_class: package class (RPackage, PythonPackage, PerlPackage)
     :param pkg_metadata: package metadata
+    :param bioconductor_version: bioconductor version
     """
 
     # if no metadata is provided, return None
@@ -1054,12 +1142,12 @@ def get_pkg_as_extension(pkg_class, pkg_metadata):
     if pkg_class == "RPackage":
         name = pkg_metadata.get('Package', '')
         version = pkg_metadata.get('Version', '')
-        checksum = pkg_metadata.get('MD5sum', '')
+        checksum = get_R_pkg_checksum(pkg_metadata, bioconductor_version)
 
     elif pkg_class == "PythonPackage":
         name = pkg_metadata.get('info', {}).get('name', '')
         version = pkg_metadata.get('info', {}).get('version', '')
-        checksum = get_python_package_checksum(pkg_metadata, version)
+        checksum = get_python_pkg_checksum(pkg_metadata)
 
     else:
         raise EasyBuildError("exts_defaultclass %s not supported" % pkg_class)
