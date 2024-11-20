@@ -5008,11 +5008,6 @@ def get_exts_list(ec):
     # get the extension list from the easyconfig file
     exts_list = ec.get('ec', {}).get('exts_list', [])
 
-    if exts_list:
-        print_msg("Found %s extensions..." % len(exts_list), log=_log)
-    else:
-        print_warning("No extensions found in easyconfig...", log=_log)
-
     return exts_list
 
 
