@@ -928,8 +928,9 @@ def calculate_md5(data):
     """
 
     if not data:
-        return ''
+        raise EasyBuildError("No data provided to calculate the MD5 checksum")
 
+    # calculate the md5 checksum
     md5_hash = hashlib.md5()
     md5_hash.update(data)
 
@@ -941,20 +942,32 @@ def get_R_pkg_checksum(pkg_metadata, bioconductor_version=None):
     Get the checksum of the given R package version
 
     :param pkg_metadata: package metadata
-    :param bioconductor_version: Bioconductor version
+    :param bioconductor_version: bioconductor version to use (if any)
 
     :return: checksum of the given R package version
     """
 
+    if not pkg_metadata:
+        raise EasyBuildError("No R package metadata provided to get the checksum")
+
     # check if checksum is provided in the metadata
     checksum = pkg_metadata.get('MD5sum', '')
 
+    # if checksum is not provided, calculate it
     if not checksum:
+        # get package information
         pkg_name = pkg_metadata.get('Package', '')
         pkg_version = pkg_metadata.get('Version', '')
 
+        # download package from the database
         package = get_pkg('RPackage', pkg_name, pkg_version, bioconductor_version)
-        checksum = calculate_md5(data=package)
+
+        # calculate the checksum
+        if package:
+            checksum = calculate_md5(data=package)
+        else:
+            print_warning("Failed to download package %s v%s to calculate the checksum" % (pkg_name, pkg_version), log=_log)
+            checksum = ''
 
     return checksum
 
@@ -968,24 +981,35 @@ def get_python_pkg_checksum(pkg_metadata):
     :return: checksum of the given Python package version
     """
 
+    if not pkg_metadata:
+        raise EasyBuildError("No python package metadata provided to get the checksum")
+
     # initialize variable
     checksum = ''
 
     # get the data of the given package version
-    version = pkg_metadata.get('info', {}).get('version', '')
-    releases = pkg_metadata.get('releases', {})
-    version_info = releases.get(version, [])
+    pkg_name = pkg_metadata.get('info', {}).get('name', '')
+    pkg_version = pkg_metadata.get('info', {}).get('version', '')
+    pkg_releases = pkg_metadata.get('releases', {})
+    pkg_info = pkg_releases.get(pkg_version, [])
 
     # parse the version info to get the checksum
-    if version_info:
+    if pkg_info:
         # look for sdist first
-        for file_info in version_info:
+        for file_info in pkg_info:
             if file_info.get('packagetype') == 'sdist':
                 checksum = file_info.get('digests', {}).get('sha256', '')
 
         # if no sdist found, take the checksum of the first distribution file
         if not checksum:
-            checksum = version_info[0].get('digests', {}).get('sha256', '')
+            checksum = pkg_info[0].get('digests', {}).get('sha256', '')
+
+        if not checksum:
+            print_warning("Failed to get package %s v%s checksum from distribution file" %
+                          (pkg_name, pkg_version), log=_log)  
+    else:
+        print_warning("Failed to get package %s v%s information to grasp the checksum" %
+                                (pkg_name, pkg_version), log=_log)
 
     return checksum
 
@@ -999,12 +1023,11 @@ def get_bioconductor_pkgs_metadata(bioc_version):
     :return: list of Bioconductor packages
     """
 
+    if not bioc_version:
+        raise EasyBuildError("No bioconductor version provided to get the bioconductor packages")
+
     # global variable to store the bioconductor packages
     global bioc_packages_cache
-
-    # check if bioconductor version has been provided
-    if not bioc_version:
-        return None
 
     # bioconductor URLs
     bioc_urls = ['%s/json/%s/%s' % (BIOCONDUCTOR_URL, bioc_version, BIOCONDUCTOR_PKGS_URL),
@@ -1045,7 +1068,18 @@ def get_pkg(pkg_class, pkg_name, pkg_version, bioconductor_version=None):
     : return: package from database
     """
 
+    if not pkg_class:
+        raise EasyBuildError("No package class provided to get the package")
+    
+    if not pkg_name:
+        raise EasyBuildError("No package name provided to get the package")
+    
+    if not pkg_version:
+        raise EasyBuildError("No package version provided to get the package")
+
+    # initialize variables
     urls = []
+    pkg = None
 
     # build the url to get the package from the database
     if pkg_class == "RPackage":
@@ -1072,22 +1106,23 @@ def get_pkg(pkg_class, pkg_name, pkg_version, bioconductor_version=None):
             response = requests.get(url, stream=True)
 
             if response.status_code == 200:
-                return response.content
+                pkg = response.content
+                break
 
     except Exception as err:
         print_warning("Exception while downloading package %s v%s. Error: %s" % (pkg_name, pkg_version, err))
 
-    return None
+    return pkg
 
 
 def get_pkg_metadata(pkg_class, pkg_name, pkg_version=None, bioc_version=None):
     """
     Get the metadata of the given package
 
-    :param pkg_class: package class (RPackage, PythonPackage, PerlPackage)
+    :param pkg_class: package class (RPackage, PythonPackage)
     :param pkg_name: package name
     :param pkg_version: package version. If None, the latest version will be retrieved.
-    :param bioc_version: bioconductor version
+    :param bioc_version: bioconductor version (if any)
 
     :return: package metadata
     """
@@ -1095,6 +1130,9 @@ def get_pkg_metadata(pkg_class, pkg_name, pkg_version=None, bioc_version=None):
     # initialize variables
     pkg_metadata = None
     bioc_packages = None
+
+    if not pkg_name:
+        raise EasyBuildError("No package name provided to get the package metadata")
 
     # build the url to get the metadata from the database
     if pkg_class == "RPackage":
@@ -1145,9 +1183,8 @@ def format_metadata_as_extension(pkg_class, pkg_metadata, bioconductor_version=N
     :return: package metadata in exts_list extension format
     """
 
-    # if no metadata is provided, return None
     if not pkg_metadata:
-        return None
+        raise EasyBuildError("No package metadata provided to format as extension")
 
     # check the package class and parse the metadata accordingly
     if pkg_class == "RPackage":
