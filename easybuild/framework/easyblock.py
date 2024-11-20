@@ -4853,13 +4853,13 @@ def inject_checksums(ecs, checksum_type):
 
 def get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=None):
     """
-    Get a new exts_list with all extensions in exts_list to the latest version.
+    Get the list of all extensions in exts_list updated to their latest version.
 
-    :param exts_defaultclass: default class for the extensions ('RPackage', 'PythonPackage', 'PerlPackage', etc.)
-    :param exts_list: list of extensions to be updated
-    :param bioconductor_version: version of Bioconductor to use (if any)
+    :param exts_defaultclass: default class for the extensions ('RPackage', 'PythonPackage')
+    :param exts_list: list of extensions to be updated.
+    :param bioconductor_version: bioconductor's version to use (if any)
 
-    :return: updated list of extensions
+    :return: list with extensions updated to their latest versions.
     """
 
     # check if the exts_list is empty
@@ -4878,18 +4878,20 @@ def get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=Non
     PKG_VERSION_OFFSET = 10
     INFO_OFFSET = 20
 
-    # aesthetic print
+    # aesthetic terminal print
     print()
 
     # loop over all extensions and update their version
     for ext in exts_list:
 
         if isinstance(ext, str):
-            # if the extension is a string, the store it as is and skip further processing
+            # if the extension is a string, then store it as is and skip further processing
             updated_exts_list.append({"name": ext, "version": None,  "options": None})
+
             # print message to the user
             print_msg(
                 f"Package {ext:<{PKG_NAME_OFFSET}} v{('---'):<{PKG_VERSION_OFFSET}} {'letf as is':<{INFO_OFFSET}}", log=_log)
+
             continue
 
         elif isinstance(ext, tuple):
@@ -4906,7 +4908,7 @@ def get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=Non
                                     bioc_version=bioconductor_version)
 
         if metadata:
-            # process the metadata and get new extension
+            # process the metadata and format it as an extension
             updated_ext = format_metadata_as_extension(exts_defaultclass, metadata, bioconductor_version)
 
             # print message to the user
@@ -4928,106 +4930,142 @@ def get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=Non
         # store the updated extension
         updated_exts_list.append(updated_ext)
 
-    # aesthetic print
+    # aesthetic terminal print
     print()
 
     return updated_exts_list
 
 
-def write_new_easyconfig_exts_list(path, new_exts_list):
+def get_updated_easyconfig(ec, update_param, update_data):
     """
-    Write a new easyconfig file with the new extensions list.
+    Get a new Easyconfig with the updated given data.
 
-    :param path: path to the easyconfig file
-    :param new_exts_list: list of new extensions to be written to the easyconfig file
+    :param ec: EasyConfig instance to update.
+    :param update_param: parameter to update in the EasyConfig.
+    :param update_data: data to update in the EasyConfig.
+
+    :return: new EasyConfig instance with the updated data.
     """
 
-    # format the new exts_list to be written to the easyconfig file
-    exts_list_formatted = ['exts_list = [']
+    if not ec:
+        raise EasyBuildError("No EasyConfig instance provided to udpate Easyconfig")
 
-    # iterate over the new extensions list and format them
-    for ext in new_exts_list:
+    if not update_param:
+        raise EasyBuildError("No parameter provided to update Easyconfig")
 
-        if ext['version'] is None:
-            exts_list_formatted.append("%s'%s'," % (INDENT_4SPACES, ext['name']))
-        else:
-            # append name and version
-            exts_list_formatted.append("%s('%s', '%s', {" % (INDENT_4SPACES, ext['name'], ext['version']))
+    if not update_data:
+        raise EasyBuildError("No data provided to update Easyconfig")
 
-            # iterate over the options and format them
-            for key, value in ext['options'].items():
-                # if value is a string, then add quotes so they are printed correctly
-                if isinstance(value, str):
-                    value = "'%s'" % value
+    if update_param == "exts_list":
+        # format the new exts_list to be written to the easyconfig file
+        exts_list_formatted = ['exts_list = [']
 
-                # append the key and value of the option
-                exts_list_formatted.append("%s'%s': %s," % (INDENT_4SPACES * 2, key, value))
+        # iterate over the new extensions list and format them
+        for ext in update_data:
 
-            # close the extension
-            exts_list_formatted.append('%s}),' % (INDENT_4SPACES,))
+            if ext['version'] is None:
+                exts_list_formatted.append("%s'%s'," % (INDENT_4SPACES, ext['name']))
+            else:
+                # append name and version
+                exts_list_formatted.append("%s('%s', '%s', {" % (INDENT_4SPACES, ext['name'], ext['version']))
 
-    # close the exts_list
-    exts_list_formatted.append(']\n')
+                # iterate over the options and format them
+                for key, value in ext['options'].items():
+                    # if value is a string, then add quotes so they are printed correctly
+                    if isinstance(value, str):
+                        value = "'%s'" % value
 
-    # read the easyconfig file and replace the exts_list with the new one
-    regex = re.compile(r'^exts_list(.|\n)*?\n\]\s*$', re.M)
-    ectxt = regex.sub('\n'.join(exts_list_formatted), read_file(path))
+                    # append the key and value of the option
+                    exts_list_formatted.append("%s'%s': %s," % (INDENT_4SPACES * 2, key, value))
 
-    # write the new easyconfig file
-    write_file(path, ectxt)
+                # close the extension
+                exts_list_formatted.append('%s}),' % (INDENT_4SPACES,))
+
+        # close the exts_list
+        exts_list_formatted.append(']\n')
+
+        # read the easyconfig file and replace the exts_list with the new one
+        regex = re.compile(r'^exts_list(.|\n)*?\n\]\s*$', re.M)
+        new_ec = regex.sub('\n'.join(exts_list_formatted), read_file(ec['spec']))
+    else:
+        raise EasyBuildError("Invalid parameter to update Easyconfig")
+
+    return new_ec
 
 
 def get_exts_list(ec):
     """
-    Get the extension list from an EasyConfig instance.
+    Get the extension list from the given EasyConfig instance.
 
-    :param ec: EasyConfig instance
+    :param ec: EasyConfig instance.
 
-    :return: exts_list of the given EasyConfig instance
+    :return: list of extensions from the given EasyConfig instance.
     """
 
-    exts_list = ec.get('ec', {}).get('exts_list', None)
+    if not ec:
+        raise EasyBuildError("No EasyConfig instance provided to retrieve extensions from")
 
-    if not exts_list:
-        raise EasyBuildError("No extension list found in easyconfig")
+    # get the extension list from the easyconfig file
+    exts_list = ec.get('ec', {}).get('exts_list', [])
+
+    if exts_list:
+        print_msg("Found %s extensions..." % len(exts_list), log=_log)
+    else:
+        print_warning("No extensions found in easyconfig...", log=_log)
 
     return exts_list
 
 
 def get_exts_list_class(ec):
     """
-    Get the exts_defaultclass or deduct it from an EasyConfig instance.
+    Get the exts_defaultclass or deduce it from the given EasyConfig instance.
 
-    :param ec: EasyConfig instance
+    :param ec: EasyConfig instance.
 
-    :return: the exts_defaultclass of the given EasyConfig instance
+    :return: the class of the extensions from the given EasyConfig instance.
     """
 
+    if not ec:
+        raise EasyBuildError("No EasyConfig instance provided to retrieve extensions from")
+
+    # get the extension list class from the easyconfig file
     exts_list_class = ec.get('ec', {}).get('exts_defaultclass', None)
+
+    # if no exts_defaultclass is found, try to deduce it from the EasyConfig name
     if not exts_list_class:
+        
+        # get the name of the EasyConfig
         name = ec.get('ec', {}).get('name', None)
+
         if name:
             if name == 'R' or name.startswith('R-'):
                 exts_list_class = 'RPackage'
             if name == 'Python' or name.startswith('Python-'):
                 exts_list_class = 'PythonPackage'
 
-    if not exts_list_class:
-        raise EasyBuildError("No extension list class found in easyconfig")
+    if exts_list_class:
+        print_msg("Found extension list class: %s..." % exts_list_class, log=_log)
+    else:
+        print_warning("No extension list class found in Easyconfig...", log=_log)
 
     return exts_list_class
 
 
 def get_bioconductor_version(ec):
     """
-    Get the Bioconductor version from an EasyConfig instance.
+    Get the Bioconductor version stored in the local_biocver parameter from the given EasyConfig instance.
 
-    :param ec: EasyConfig instance
+    :param ec: EasyConfig instance.
 
-    :return: the Bioconductor version of the given EasyConfig instance (if any)
+    :return: The Bioconductor version of the given EasyConfig instance (if any).
     """
 
+    if not ec:
+        raise EasyBuildError("No EasyConfig instance provided to retrieve extensions from")
+
     # get the Bioconductor version from the easyconfig file
+    # assume that the Bioconductor version is stored in the 'local_biocver' parameter
+    # as this is not a standard parameter we need to parse the raw text
     rawtxt = getattr(ec['ec'], 'rawtxt', '')
     match = re.search(r'local_biocver\s*=\s*([0-9.]+)', rawtxt)
 
@@ -5066,17 +5104,21 @@ def update_exts_list(ecs):
         print_msg("Getting Bioconductor version (if any)...", log=_log)
         bioconductor_version = get_bioconductor_version(ec)
 
-        # update the extensions in the exts_list to their latest version
+        # get a new exts_list with all extensions to their latest version.
         print_msg("Updating extension list...", log=_log)
         updated_exts_list = get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version)
 
-        # write the new easyconfig file
+        # get new easyconfig file with the updated extensions list
+        print_msg('Updating Easyconfig instance...', log=_log)
+        updated_easyconfig = get_updated_easyconfig(ec, "exts_list", updated_exts_list)
+
+        # back up the original easyconfig file
         ec_backup = back_up_file(ec['spec'], backup_extension='bak_update')
-        print_msg("Backing up EasyConfig file at %s..." % ec_backup, log=_log)
+        print_msg("Backing up EasyConfig file at %s" % ec_backup, log=_log)
 
         # write the new easyconfig file
         print_msg('Writing updated EasyConfig file...', log=_log)
-        write_new_easyconfig_exts_list(ec['spec'], updated_exts_list)
+        write_file(ec['spec'], updated_easyconfig)
 
         # success message
         print_msg('EASYCONFIG SUCCESSFULLY UPDATED!\n', log=_log)
