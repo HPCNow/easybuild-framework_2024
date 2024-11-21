@@ -5026,20 +5026,25 @@ def get_exts_list_class(ec):
     # get the extension list class from the easyconfig file
     exts_list_class = ec.get('ec', {}).get('exts_defaultclass', None)
 
-    # if no exts_defaultclass is found, try to deduce it from the EasyConfig name
+    # if no exts_defaultclass is found, try to deduce it from the EasyConfig parameters
     if not exts_list_class:
         
-        # get the name of the EasyConfig
+        # get EasyConfig parameters
         name = ec.get('ec', {}).get('name', None)
+        easyblock = ec.get('ec', {}).get('easyblock', None)
 
-        if name:
-            if name == 'R' or name.startswith('R-'):
-                exts_list_class = 'RPackage'
-            if name == 'Python' or name.startswith('Python-'):
+        # check if we can deduce the extension list class from the EasyConfig parameters
+        if name and (name == 'R') or (name.startswith('R-')):
+            exts_list_class = 'RPackage'
+
+        if name and (name == 'Python') or (name.startswith('Python-')):
+            exts_list_class = 'PythonPackage'
+
+        if easyblock and (easyblock == 'PythonBundle'):
                 exts_list_class = 'PythonPackage'
 
     if exts_list_class:
-        print_msg("Found extension list class: %s..." % exts_list_class, log=_log)
+        print_msg("Found extension list class: %s" % exts_list_class, log=_log)
     else:
         print_warning("No extension list class found in Easyconfig...", log=_log)
 
