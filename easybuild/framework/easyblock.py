@@ -5002,6 +5002,10 @@ def get_dependencies(ec):
 
     :return: list of dependencies from the given EasyConfig instance.
     """
+
+    if not ec:
+        raise EasyBuildError("No EasyConfig instance provided to get dependencies from")
+
     app: EasyBlock = get_easyblock_instance(ec)
     return app.cfg.dependencies()
 
@@ -5156,7 +5160,7 @@ def crosscheck_exts_list(exts_list, installed_exts):
                 break
 
     if not match:
-        print_msg("No installed extensions found in the exts_list!\n", log=_log)
+        print_msg("No pre-installed extensions found in the exts_list!\n", log=_log)
 
 
 def get_installed_exts(ec, ec_dep=None, processed_deps=[]):
