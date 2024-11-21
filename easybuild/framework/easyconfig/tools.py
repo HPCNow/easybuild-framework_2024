@@ -1174,7 +1174,7 @@ def get_pkg_metadata(pkg_class, pkg_name, pkg_version=None, bioc_version=None):
 
 def format_metadata_as_extension(pkg_class, pkg_metadata, bioconductor_version=None):
     """
-    Get the package metada as an exts_list extension format
+    Get the package metadata as an exts_list extension format
 
     :param pkg_class: package class (RPackage, PythonPackage, PerlPackage)
     :param pkg_metadata: package metadata
