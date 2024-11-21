@@ -5159,11 +5159,12 @@ def crosscheck_exts_list(exts_list, installed_exts):
         print_msg("No installed extensions found in the exts_list!\n", log=_log)
 
 
-def get_installed_exts(ec, processed_deps=[]):
+def get_installed_exts(ec, ec_dep=None, processed_deps=[]):
     """
     Generate a list of extensions that will be pre-installed due to dependencies or build_dependencies specified in the easyconfig parameters.
 
-    :param ec: EasyConfig instance
+    :param ec: original EasyConfig instance to retrieve extensions from
+    :param ec_dep: dependency EasyConfig instance to retrieve extensions from
     :param processed_deps: list of processed dependencies
     """
 
@@ -5173,13 +5174,18 @@ def get_installed_exts(ec, processed_deps=[]):
     # init variable to store the installed extensions
     installed_exts = []
 
-    # get easyconfig dependencies
-    dependencies = get_dependencies(ec)
+    # if ec_dep is provided, then get the dependencies of the dependency
+    # else get dependencies of the original EasyConfig
+    if ec_dep:
+        dependencies = get_dependencies(ec_dep)
+    else:
+        dependencies = get_dependencies(ec)
 
     # set terse mode to True to avoid printing unnecessary information
     terse = build_option('terse')
     update_build_option('terse', True)
 
+    # get the extensions of the dependencies of the current EasyConfig
     for dep in dependencies:
 
         # get dependency's name
@@ -5199,36 +5205,35 @@ def get_installed_exts(ec, processed_deps=[]):
 
         print_msg("Getting extensions from dependency: %s", dep_name, log=_log)
 
-        # search for the corresponding easyconfig file
+        # search for the corresponding EasyConfig file
         easyconfigs = search_easyconfigs(dep_name, print_result=False)
 
         # if easyconfig files were found, then process them
         if easyconfigs:
 
-            # print warning if more than one easyconfig file was found
+            # print warning if more than one EasyConfig file was found
             if len(easyconfigs) > 1:
-                print_warning("More than one easyconfig file found for dependency %s: %s", dep_name, easyconfigs)
+                print_warning("More than one EasyConfig file found for dependency %s: %s", dep_name, easyconfigs)
 
-            # process only the first easyconfig file found
-            dep_ec = process_easyconfig(easyconfigs[0], validate=False)[0]
+            # process only the first EasyConfig file found
+            easyconfig_dep = process_easyconfig(easyconfigs[0], validate=False)[0]
 
-            # Search recursively for pre-installed extensions of dependencies of the current dependency
-            installed = get_installed_exts(dep_ec, processed_deps)
+            # Search recursively for pre-installed extensions of dependencies of the current EasyConfig
+            installed = get_installed_exts(ec, easyconfig_dep, processed_deps)
 
-            # store the extensions of the dependencies of the current dependency
+            # store the extensions of the dependencies of the current EasyConfig
             for ext in installed:
                 ext_name, ext_version, ext_options = get_extension_values(ext)
-                ext_options['easyconfig_path'] = dep_ec['spec']
+                ext_options['easyconfig_path'] = easyconfig_dep['spec']
                 installed_exts.append((ext_name, ext_version, ext_options))
 
-            # get the extensions of the current dependency
-            exts_list = get_exts_list(dep_ec)
-
-            # store the extensions of the current dependency
-            for ext in exts_list:
-                ext_name, ext_version, ext_options = get_extension_values(ext)
-                ext_options['easyconfig_path'] = dep_ec['spec']
-                installed_exts.append((ext_name, ext_version, ext_options))
+    # get and store the extensions of the current EasyConfig only if it is a dependency
+    # avoid storing extensions of the original EasyConfig
+    if ec_dep:
+        for ext in get_exts_list(ec_dep):
+            ext_name, ext_version, ext_options = get_extension_values(ext)
+            ext_options['easyconfig_path'] = ec_dep['spec']
+            installed_exts.append((ext_name, ext_version, ext_options))
 
     # restore the original value of the terse option
     update_build_option('terse', terse)
