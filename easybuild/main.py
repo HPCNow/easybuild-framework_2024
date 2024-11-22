@@ -50,12 +50,12 @@ import traceback
 from easybuild.tools.build_log import EasyBuildError, print_error, print_msg, print_warning, stop_logging
 
 from easybuild.framework.easyblock import build_and_install_one, inject_checksums, inject_checksums_to_json
-from easybuild.framework.easyblock import update_exts_list
 from easybuild.framework.easyconfig import EASYCONFIGS_PKG_SUBDIR
 from easybuild.framework.easyconfig import easyconfig
 from easybuild.framework.easystack import parse_easystack
 from easybuild.framework.easyconfig.easyconfig import clean_up_easyconfigs
 from easybuild.framework.easyconfig.easyconfig import fix_deprecated_easyconfigs, verify_easyconfig_filename
+from easybuild.framework.easyconfig.exts_tools import update_exts_list
 from easybuild.framework.easyconfig.style import cmdline_easyconfigs_style_check
 from easybuild.framework.easyconfig.tools import categorize_files_by_type, dep_graph, det_copy_ec_specs
 from easybuild.framework.easyconfig.tools import det_easyconfig_paths, dump_env_script, get_paths_for
