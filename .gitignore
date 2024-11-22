@@ -11,6 +11,7 @@ dist/
 *.swp
 .mypy_cache/
 .venv*
+.vscode/
 Dockerfile.*
 Singularity.*
 test-reports/
