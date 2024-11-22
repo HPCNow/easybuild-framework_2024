@@ -58,28 +58,6 @@ bioc_packages_cache = None
 _log = fancylogger.getLogger('easyblock')
 
 
-def _calculate_md5(data):
-    """
-    Calculate the MD5 checksum of the given data
-
-    :param data: data to calculate the checksum for
-
-    :return: MD5 checksum of the given data
-    """
-
-    if not data:
-        raise EasyBuildError("No data provided to calculate the MD5 checksum")
-
-    # calculate the md5 checksum
-    md5_hash = hashlib.md5()
-    md5_hash.update(data)
-
-    test = hashlib.md5(data).hexdigest()
-    original = md5_hash.hexdigest()
-    
-    return original
-
-
 def _get_R_pkg_checksum(pkg_metadata, bioconductor_version=None):
     """
     Get the checksum of the given R package version
@@ -107,7 +85,7 @@ def _get_R_pkg_checksum(pkg_metadata, bioconductor_version=None):
 
         # calculate the checksum
         if package:
-            checksum = _calculate_md5(data=package)
+            checksum = hashlib.md5(package).hexdigest()
         else:
             print_warning("Failed to download package %s v%s to calculate the checksum" %
                           (pkg_name, pkg_version), log=_log)
