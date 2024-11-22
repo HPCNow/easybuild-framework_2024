@@ -345,7 +345,7 @@ def process_eb_args(eb_args, eb_go, cfg_settings, modtool, testing, init_session
         'sync_pr_with_develop',
         'update_branch_github',
         'update_pr',
-    ) if getattr(options, opt)
+        ) if getattr(options, opt)
     ]
     any_pr_option_set = len(set_pr_options) > 0
     if len(set_pr_options) > 1:

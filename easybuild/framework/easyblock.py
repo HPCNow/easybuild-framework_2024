@@ -58,7 +58,7 @@ import easybuild.tools.environment as env
 import easybuild.tools.toolchain as toolchain
 from easybuild.base import fancylogger
 from easybuild.framework.easyconfig import EASYCONFIGS_PKG_SUBDIR
-from easybuild.framework.easyconfig.easyconfig import ITERATE_OPTIONS, EasyConfig, ActiveMNS, get_easyblock_class, process_easyconfig
+from easybuild.framework.easyconfig.easyconfig import ITERATE_OPTIONS, EasyConfig, ActiveMNS, get_easyblock_class
 from easybuild.framework.easyconfig.easyconfig import get_module_path, letter_dir_for, resolve_template
 from easybuild.framework.easyconfig.format.format import SANITY_CHECK_PATHS_DIRS, SANITY_CHECK_PATHS_FILES
 from easybuild.framework.easyconfig.parser import fetch_parameters_from_easyconfig
@@ -100,7 +100,6 @@ from easybuild.tools.output import show_progress_bars, start_progress_bar, stop_
 from easybuild.tools.package.utilities import package
 from easybuild.tools.py2vs3 import extract_method_name, string_type
 from easybuild.tools.repository.repository import init_repository
-from easybuild.tools.robot import search_easyconfigs
 from easybuild.tools.systemtools import check_linked_shared_libs, det_parallelism, get_linked_libs_raw
 from easybuild.tools.systemtools import get_shared_lib_ext, pick_system_specific_value, use_group
 from easybuild.tools.utilities import INDENT_4SPACES, get_class_for, nub, quote_str
