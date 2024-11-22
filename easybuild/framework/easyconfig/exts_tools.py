@@ -401,7 +401,7 @@ def _get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=No
 
         elif isinstance(ext, tuple):
             # get the values of the exts_list extension
-            ext_name, ext_version, ext_options = ext
+            ext_name, ext_version, ext_options = _get_extension_values(ext)
 
         else:
             raise EasyBuildError("Invalid extension format")
@@ -496,6 +496,36 @@ def _get_updated_easyconfig(ec, update_param, update_data):
         raise EasyBuildError("Invalid parameter to update Easyconfig")
 
     return new_ec
+
+
+def _get_extension_values(extension):
+    """
+    Extract the name, version, and options from an extension.
+
+    :param extension: extension instance
+    """
+    if isinstance(extension, str):
+        return extension, "", {}
+
+    elif isinstance(extension, tuple):
+        if len(extension) == 1:
+            return extension[0], "", {}
+        elif len(extension) == 2:
+            return extension[0], extension[1], {}
+        elif len(extension) == 3:
+            return extension[0], extension[1], extension[2]
+        else:
+            raise EasyBuildError("Invalid number of elements in extension tuple")
+
+    elif isinstance(extension, dict):
+        return (
+            extension.get('name', ""),
+            extension.get('version', ""),
+            extension.get('options', {})
+        )
+
+    else:
+        raise EasyBuildError("Invalid extension instance")
 
 
 def _get_exts_list(ec):
