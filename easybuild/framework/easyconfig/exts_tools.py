@@ -283,9 +283,8 @@ def _get_pkg_metadata(pkg_class, pkg_name, pkg_version=None, bioc_version=None):
     except Exception as err:
         print_warning("Exception while getting metadata for extension %s: %s" % (pkg_name, err))
 
-    # if the package is not found in the database, then check if it is a bioconductor package
+    # if the package is not found in the database, then iterate over bioconductor packages to find the package
     if not pkg_metadata and bioc_packages:
-        # iterate over bioconductor packages to find the package
         for package in bioc_packages.items():
             if package[0] == pkg_name:
                 pkg_metadata = package[1]
@@ -476,36 +475,6 @@ def _get_updated_easyconfig(ec, update_param, update_data):
     return new_ec
 
 
-def _get_extension_values(extension):
-    """
-    Extract the name, version, and options from an extension.
-
-    :param extension: extension instance
-    """
-    if isinstance(extension, str):
-        return extension, "", {}
-
-    elif isinstance(extension, tuple):
-        if len(extension) == 1:
-            return extension[0], "", {}
-        elif len(extension) == 2:
-            return extension[0], extension[1], {}
-        elif len(extension) == 3:
-            return extension[0], extension[1], extension[2]
-        else:
-            raise EasyBuildError("Invalid number of elements in extension tuple")
-
-    elif isinstance(extension, dict):
-        return (
-            extension.get('name', ""),
-            extension.get('version', ""),
-            extension.get('options', {})
-        )
-
-    else:
-        raise EasyBuildError("Invalid extension instance")
-
-
 def _get_exts_list(ec):
     """
     Get the extension list from the given EasyConfig instance.
@@ -590,6 +559,36 @@ def _get_bioconductor_version(ec):
         print_msg("'local_biocver' parameter not set in easyconfig. Bioconductor packages will not be considered...", log=_log)
 
     return bioconductor_version
+
+
+def _get_extension_values(extension):
+    """
+    Extract the name, version, and options from an extension.
+
+    :param extension: extension instance
+    """
+    if isinstance(extension, str):
+        return extension, "", {}
+
+    elif isinstance(extension, tuple):
+        if len(extension) == 1:
+            return extension[0], "", {}
+        elif len(extension) == 2:
+            return extension[0], extension[1], {}
+        elif len(extension) == 3:
+            return extension[0], extension[1], extension[2]
+        else:
+            raise EasyBuildError("Invalid number of elements in extension tuple")
+
+    elif isinstance(extension, dict):
+        return (
+            extension.get('name', ""),
+            extension.get('version', ""),
+            extension.get('options', {})
+        )
+
+    else:
+        raise EasyBuildError("Invalid extension instance")
 
 
 def update_exts_list(ecs):
