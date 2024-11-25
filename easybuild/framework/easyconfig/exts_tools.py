@@ -55,6 +55,11 @@ BIOCONDUCTOR_PKGS_URL = "bioc/packages.json"
 BIOCONDUCTOR_ANNOTATION_URL = "data/annotation/packages.json"
 BIOCONDUCTOR_EXPERIMENT_URL = "data/experiment/packages.json"
 
+# offsets for printing the package information
+PKG_NAME_OFFSET = 15
+PKG_VERSION_OFFSET = 10
+INFO_OFFSET = 20
+
 # Global variable to store Bioconductor packages
 bioc_packages_cache = None
 
@@ -359,11 +364,6 @@ def _get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=No
     # init variables
     updated_exts_list = []
 
-    # offsets for printing the package information
-    PKG_NAME_OFFSET = 25
-    PKG_VERSION_OFFSET = 10
-    INFO_OFFSET = 20
-
     # aesthetic terminal print
     print()
 
@@ -376,7 +376,7 @@ def _get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=No
 
             # print message to the user
             print_msg(
-                f"Package {ext:<{PKG_NAME_OFFSET}} v{('---'):<{PKG_VERSION_OFFSET}} {'letf as is':<{INFO_OFFSET}}", log=_log)
+                f"{ext:<{PKG_NAME_OFFSET}} v{('---'):<{PKG_VERSION_OFFSET}} {'letf as is':<{INFO_OFFSET}}", log=_log)
 
             continue
 
@@ -400,10 +400,10 @@ def _get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=No
             # print message to the user
             if ext_version == updated_ext['version']:
                 print_msg(
-                    f"Package {ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} {'up-to-date':<{INFO_OFFSET}}", log=_log)
+                    f"{ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} {'up-to-date':<{INFO_OFFSET}}", log=_log)
             else:
                 print_msg(
-                    f"Package {ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} updated to v{updated_ext['version']:<{INFO_OFFSET}}", log=_log)
+                    f"{ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} updated to v{updated_ext['version']:<{INFO_OFFSET}}", log=_log)
 
         else:
             # no metadata found, therefore store the original extension
@@ -411,7 +411,7 @@ def _get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=No
 
             # print message to the user
             print_msg(
-                f"Package {ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} {'info not found':<{INFO_OFFSET}}", log=_log)
+                f"{ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} {'info not found':<{INFO_OFFSET}}", log=_log)
 
         # store the updated extension
         updated_exts_list.append(updated_ext)
@@ -638,9 +638,11 @@ def _crosscheck_exts_list(exts_list, installed_exts):
             # check if the extension is already installed by a dependency
             if inst_ext_name.lower() == ext_name.lower():
                 match = True
-                print_msg("%s v%s  in exts_list" % (ext_name, ext_version), log=_log)
-                print_msg("%s v%s  in dependency %s\n" %
-                          (inst_ext_name, inst_ext_version, inst_ext_options['easyconfig_path']), log=_log)
+                print_msg(
+                    f"{ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} {'in exts_list':<{INFO_OFFSET}}", log=_log)
+                print_msg(
+                    f"{inst_ext_name:<{PKG_NAME_OFFSET}} v{('_' if inst_ext_version is None else inst_ext_version):<{PKG_VERSION_OFFSET}} in dependency {inst_ext_options['easyconfig_path']:<{INFO_OFFSET}}\n", log=_log)
+
                 break
 
     if not match:
