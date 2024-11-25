@@ -2293,10 +2293,7 @@ class EasyBlock(object):
             version = get_optimal_version(releases, {version})
 
         # Check if the package is already being installed by a dependency
-        num = 1
         for dep in exts_by_deps:
-            print(num)
-            num += 1
             ext_dep_name = dep.get('name')
             ext_dep_version = dep.get('version')
             if ext_dep_name == name:
@@ -2477,7 +2474,7 @@ class EasyBlock(object):
 
             for dep_name in pkg.get('dependencies', []):
                 dep = get_pkg(dep_name)
-                if dep['name'] not in processed:
+                if dep_name not in processed:
                     process_deps(dep, processed)
 
             processed.add(pkg['name'])
