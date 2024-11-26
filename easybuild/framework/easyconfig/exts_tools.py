@@ -927,6 +927,8 @@ def _get_installed_exts(ec, ec_dep=None, processed_deps=[]):
     if not ec:
         raise EasyBuildError("No EasyConfig instance provided to retrieve extensions from")
 
+    print_msg(f"\r\tDependencies processed: {len(processed_deps)}", newline=False, prefix=False, log=_log)
+    
     # init variable to store the installed extensions
     installed_exts = []
 
@@ -958,8 +960,6 @@ def _get_installed_exts(ec, ec_dep=None, processed_deps=[]):
         if dep['system']:
             installed_exts.extend([{'name': dep['name'], 'version': dep['version']}])
             continue
-
-        print_msg("Getting extensions from dependency: %s", dep_name, log=_log)
 
         # search for the corresponding EasyConfig file
         easyconfigs = search_easyconfigs(dep_name, print_result=False)
@@ -993,7 +993,7 @@ def _get_installed_exts(ec, ec_dep=None, processed_deps=[]):
 
     # restore the original value of the terse option
     update_build_option('terse', terse)
-
+    
     return installed_exts
 
 def update_exts_list(ecs):
@@ -1006,8 +1006,9 @@ def update_exts_list(ecs):
     for ec in ecs:
 
         # welcome message
-        print()
-        print_msg("UPDATING EASYCONFIG %s" % ec['spec'], log=_log)
+        print_msg("\nUPDATING EASYCONFIG", prefix=False, log=_log)
+
+        print_msg("Easyconfig: %s" % ec['spec'], log=_log)
 
         # get the extension list
         print_msg("Getting extension list...", log=_log)
@@ -1038,7 +1039,7 @@ def update_exts_list(ecs):
         write_file(ec['spec'], updated_easyconfig)
 
         # success message
-        print_msg('EASYCONFIG SUCCESSFULLY UPDATED!\n', log=_log)
+        print_msg('EASYCONFIG SUCCESSFULLY UPDATED!\n', prefix=False, log=_log)
 
 
 def check_installed_exts(ecs):
@@ -1051,23 +1052,25 @@ def check_installed_exts(ecs):
     for ec in ecs:
 
         # welcome message
-        print()
-        print_msg("CHECK INSTALLED EXTENSIONS IN %s" % ec['spec'], log=_log)
+        print_msg("\nCHECK INSTALLED EXTENSIONS", prefix=False, log=_log)
+
+        print_msg("Easyconfig: %s" % ec['spec'], log=_log)
 
         # get the extension list
         print_msg("Getting extension list...", log=_log)
         exts_list = _get_exts_list(ec)
 
         # get the extensions installed by dependencies
-        print_msg("Getting installed extensions...", log=_log)
+        print_msg("Getting extensions installed by dependencies or build dependencies...", log=_log)
         installed_exts = _get_installed_exts(ec)
+        print_msg(f"\tInstalled extensions found: {len(installed_exts)}", prefix=False, log=_log)
 
         # cross-check the installed extensions with the exts_list
         print_msg("Checking installed extensions...", log=_log)
         _crosscheck_exts_list(exts_list, installed_exts)
 
         # success message
-        print_msg('INSTALLED DEPENDENCY EXTENSIONS CHECKED!\n', log=_log)
+        print_msg('INSTALLED DEPENDENCY EXTENSIONS CHECKED!\n', prefix=False, log=_log)
 
 
 def complete_exts_list(ecs):
