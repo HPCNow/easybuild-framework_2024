@@ -60,6 +60,12 @@ PKG_NAME_OFFSET = 15
 PKG_VERSION_OFFSET = 10
 INFO_OFFSET = 20
 
+# List of packages to exclude from the dependencies
+EXCLUDE_R_LIST = ['R', 'base', 'compiler', 'datasets', 'graphics',
+                'grDevices', 'grid', 'methods', 'parallel',
+                'splines', 'stats', 'stats4', 'tcltk', 'tools',
+                'utils', 'MASS']
+
 # Global variable to store Bioconductor packages
 bioc_packages_cache = None
 
@@ -340,6 +346,266 @@ def _format_metadata_as_extension(pkg_class, pkg_metadata, bioconductor_version=
     checksum = checksum.replace('\n', '')
 
     return {"name": name, "version": version,  "options": {"checksums": [checksum]}}
+
+
+def _get_clean_pkg_values(pkg_name=None, pkg_version=None, pkg_options=None):
+    """
+    Clean the given extension values
+
+    :param pkg_name: package name to clean
+    :param pkg_version: package version to clean
+    :param pkg_options: package options to clean
+    """
+
+    clean_name, clean_version, clean_options = pkg_name, pkg_version, pkg_options
+
+    # clean the name
+    if pkg_name: 
+        # Regular expression pattern to match versions like 'RSQLite (>= 2.0)'
+        pattern = r'^(?P<name>[^\s]+) \((?P<info>.+)\)$'
+        match = re.match(pattern, pkg_name)
+
+        # check if there is a match
+        if match:
+            clean_name = match.group('name')
+            pkg_version = match.group('info')
+
+        # remove any new line characters from the name
+        clean_name = clean_name.replace('\n', '')
+
+    # clean the version
+    if pkg_version:
+        # allow only alphanumeric characters in the version
+        allowed_version_chars = r'[^0-9><=!*. \-]'
+        
+        # remove any non-alphanumeric characters from the version
+        clean_version = re.sub(allowed_version_chars, '', pkg_version)
+
+        # remove any new line characters from the version
+        clean_version = clean_version.replace('\n', '')
+    
+    # clean the options
+    if pkg_options:
+        checksum = pkg_options['checksums']
+        if checksum:
+            clean_options = {}
+            clean_options['checksums'] = [checksum[0].replace('\n', '')]
+
+    return clean_name, clean_version, clean_options
+
+
+def _get_R_extension_dependencies(extension, bioconductor_version=None, exts_list=[], installed_exts=[], processed_exts=[]):
+    """
+    Process the dependencies of the given R extension.
+
+    :param extension: the extension to get dependencies from
+    :param bioconductor_version: bioconductor's version to use (if any)
+    :param exts_list: list of extensions of the current EasyConfig (if any)
+    :param installed_exts: list of installed extensions by dependencies (if any)
+    :param processed_exts: list of extensions already processed (if any)
+
+    :return: list of dependencies of the given R extension
+    """
+
+    # check if the extension is empty
+    if not extension:
+        raise EasyBuildError("No extension provided to get the dependencies from")
+
+    # init variables 
+    dependencies = []
+
+    # get the values of the extension
+    ext_name, ext_version, _ = _get_extension_values(extension)
+
+    # if the extension is a string, then skip further processing
+    if isinstance(extension, str):
+        return []
+
+    # get metadata of the version of the extension
+    metadata = _get_pkg_metadata("RPackage", ext_name, ext_version, bioconductor_version)
+
+    # get the dependencies of the extension
+    if metadata:
+        metadata_dependencies = []
+
+        for key in ('Depends', 'Imports', 'LinkingTo'):
+            if key in metadata:
+                if isinstance(metadata[key], list):
+                    for item in metadata[key]:
+                        metadata_dependencies.append(item)
+                elif isinstance(metadata[key], dict):
+                    for pkg_name, _ in metadata[key].items():
+                        metadata_dependencies.append(pkg_name)
+
+        for dep_name in metadata_dependencies:
+
+            # clean the dependency values
+            dep_name, _, _ = _get_clean_pkg_values(dep_name)
+
+            # check if the dependency already processed
+            is_processed = False
+            for proc_ext in processed_exts:
+                if proc_ext.lower() == dep_name.lower():
+                    is_processed = True
+                    break
+
+            # if the dependency is already processed, then skip
+            if is_processed:
+                continue
+
+            # append the extension to the list of processed extensions
+            processed_exts.append(dep_name)
+
+            # check if the dependency is already in the exts_list
+            is_in_exts_list = False
+            for ext in exts_list:
+                if ext[0].lower() == dep_name.lower():
+                    is_in_exts_list = True
+                    print_msg(
+                        f"\t{dep_name:<{PKG_NAME_OFFSET}} is in the original exts_list. RECOMMENDATION: Consider removing {dep_name} from the original exts_list", log=_log)
+                    break
+            
+            # if the dependency is in the exts_list, then skip
+            if is_in_exts_list:
+                continue
+
+            # check if the dependency is already installed by a dependency
+            is_installed = False
+            for inst_ext in installed_exts:
+                inst_ext_name, _, inst_ext_options = _get_extension_values(inst_ext)
+                if inst_ext_name.lower() == dep_name.lower():
+                    is_installed = True
+                    print_msg(
+                        f"\t{dep_name:<{PKG_NAME_OFFSET}} already installed by dependency: {inst_ext_options['easyconfig_path']}", log=_log)
+                    break
+
+            # if the dependency is already installed, then skip
+            if is_installed:
+                continue
+
+            # check if the dependency is in the exclude list
+            is_excluded = False
+            for exclude_ext in EXCLUDE_R_LIST:
+                if exclude_ext.lower() == dep_name.lower():
+                    is_excluded = True
+                    print_msg(f"\t{dep_name:<{PKG_NAME_OFFSET}} is in the exclude list", log=_log)
+                    continue
+
+            # if the dependency is excluded, then skip
+            if is_excluded:
+                continue
+
+            print_msg(f"\t{dep_name} added as dependency")
+
+            # build the metadata dependency as extension getting the last version
+            dep_name = {'name': dep_name, 'version': None, 'options': {}}
+
+            # recursively get dependencies of dependency
+            deps = _get_R_extension_dependencies(dep_name, bioconductor_version, processed_exts)
+
+            # append the dependencies to the list
+            dependencies.extend(deps)
+
+            # append the dependency to the list
+            dependencies.append(dep_name)
+
+    return dependencies
+
+
+def _get_completed_R_exts_list(exts_list, bioconductor_version=None, installed_exts=[]):
+    """
+    Complete the R extensions list with its dependencies in correct order.
+
+    :param exts_list: list of extensions to be updated.
+    :param bioconductor_version: bioconductor's version to use (if any)
+    :param installed_exts: list of installed extensions by dependencies (if any)
+
+    :return: list of extensions for a complete exts_list
+    """
+
+    # check if the exts_list is empty
+    if not exts_list:
+        raise EasyBuildError("No exts_list provided for completing")
+
+    # init variables
+    dependendy_tree = []
+    complete_exts_list = []
+    processed_exts = []
+
+    # get the dependendy tree. i.e. list of dependencies for each extension
+    for ext in exts_list:
+
+        # get the values of the extension
+        ext_name, ext_version, ext_options = _get_extension_values(ext)
+
+        print()
+        print_msg("Processing %s. Dependencies:" % ext_name, log=_log)
+
+        # get dependencies of the extension
+        dependencies = _get_R_extension_dependencies(ext, bioconductor_version, exts_list, installed_exts, processed_exts)
+
+        # store the dependencies in the complete list
+        dependendy_tree.extend(dependencies)
+        
+        # store the extension in the complete list
+        dependendy_tree.append({"name": ext_name, "version": ext_version, "options": ext_options})
+
+    # aesthetic terminal print
+    print()
+
+    # go over the dependency tree and fill the version and checksums
+    for ext in dependendy_tree:
+
+        # get the values of the extension
+        ext_name, ext_version, ext_options = _get_extension_values(ext)
+
+        # get metadata of the extension
+        metadata = _get_pkg_metadata(pkg_class="RPackage",
+                                    pkg_name=ext_name,
+                                    pkg_version=ext_version,
+                                    bioc_version=bioconductor_version)
+
+        # process the metadata, format it as an extension, and store it
+        if metadata:
+            ext = _format_metadata_as_extension("RPackage", metadata, bioconductor_version)
+            complete_exts_list.append(ext)
+
+    # return the complete list of extensions
+    return complete_exts_list
+
+
+def _get_completed_exts_list(exts_list, exts_defaultclass, installed_exts, bioconductor_version=None):
+    """
+    Get the completed list of all extensions in exts_list.
+
+    :param exts_list: list of extensions to be updated.
+    :param exts_defaultclass: default class for the extensions ('RPackage', 'PythonPackage')
+    :param installed_exts: list of installed extensions by depdencies
+    :param bioconductor_version: bioconductor's version to use (if any)
+
+    :return: list with extensions updated to their latest versions.
+    """
+
+    # init variables
+    completed_exts_list = []
+
+    # check if the exts_list is empty
+    if not exts_list:
+        raise EasyBuildError("No exts_list provided for completing")
+
+    # check if the exts_defaultclass is empty
+    if not exts_defaultclass:
+        raise EasyBuildError("No exts_defaultclass provided for completing")
+
+    if exts_defaultclass == "RPackage":
+        completed_exts_list =  _get_completed_R_exts_list(exts_list, bioconductor_version, installed_exts)
+    elif exts_defaultclass == "PythonPackage":
+        # _complete_python_exts_list(exts_list, installed_exts)
+        raise EasyBuildError("--complete-exts-list not implemented for PythonPackage yet")
+    else:
+        raise EasyBuildError("exts_defaultclass %s not supported" % exts_defaultclass)
+    
+    return completed_exts_list
 
 
 def _get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=None):
@@ -802,3 +1068,52 @@ def check_installed_exts(ecs):
 
         # success message
         print_msg('INSTALLED DEPENDENCY EXTENSIONS CHECKED!\n', log=_log)
+
+
+def complete_exts_list(ecs):
+    """
+    Write a new EasyConfig recipie with the completed exts_list
+
+    :param ecs: list of EasyConfig instances to complete dependencies for
+    """
+
+    for ec in ecs:
+
+        # welcome message
+        print()
+        print_msg("COMPLETING EASYCONFIG %s" % ec['spec'], log=_log)
+
+        # get the extension list
+        print_msg("Getting extension list...", log=_log)
+        exts_list = _get_exts_list(ec)
+
+        # get the extension's list class
+        print_msg("Getting extension's list class...", log=_log)
+        exts_defaultclass = _get_exts_list_class(ec)
+
+        # get the extensions installed by dependencies
+        print_msg("Getting installed extensions...", log=_log)
+        installed_exts = _get_installed_exts(ec)
+
+        # get the Bioconductor version
+        print_msg("Getting Bioconductor version (if any)...", log=_log)
+        bioconductor_version = _get_bioconductor_version(ec)
+
+        # get a new exts_list with all extensions to their latest version.
+        print_msg("Completing extension list...", log=_log)
+        completed_exts_list = _get_completed_exts_list(exts_list, exts_defaultclass, installed_exts, bioconductor_version)
+
+        # get new easyconfig file with the updated extensions list
+        print_msg('Updating Easyconfig instance with completed exts_list...', log=_log)
+        updated_easyconfig = _get_updated_easyconfig(ec, "exts_list", completed_exts_list)
+
+        # back up the original easyconfig file
+        ec_backup = back_up_file(ec['spec'], backup_extension='bak_update')
+        print_msg("Backing up EasyConfig file at %s" % ec_backup, log=_log)
+
+        # write the new easyconfig file
+        print_msg('Writing updated EasyConfig file...', log=_log)
+        write_file(ec['spec'], updated_easyconfig)
+
+        # success message
+        print_msg('EASYCONFIG SUCCESSFULLY COMPLETED!\n', log=_log)
