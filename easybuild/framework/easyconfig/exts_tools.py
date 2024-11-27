@@ -356,7 +356,7 @@ def _get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=No
     updated_exts_list = []
 
     # offsets for printing the package information
-    PKG_NAME_OFFSET = 25
+    PKG_NAME_OFFSET = 18
     PKG_VERSION_OFFSET = 10
     INFO_OFFSET = 20
 
@@ -372,7 +372,7 @@ def _get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=No
 
             # print message to the user
             print_msg(
-                f"Package {ext:<{PKG_NAME_OFFSET}} v{('---'):<{PKG_VERSION_OFFSET}} {'letf as is':<{INFO_OFFSET}}", log=_log)
+                f"\t{ext:<{PKG_NAME_OFFSET}} v{('---'):<{PKG_VERSION_OFFSET}} {'letf as is':<{INFO_OFFSET}}", prefix=False, log=_log)
 
             continue
 
@@ -396,10 +396,10 @@ def _get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=No
             # print message to the user
             if ext_version == updated_ext['version']:
                 print_msg(
-                    f"Package {ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} {'up-to-date':<{INFO_OFFSET}}", log=_log)
+                    f"\t{ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} {'up-to-date':<{INFO_OFFSET}}", prefix=False, log=_log)
             else:
                 print_msg(
-                    f"Package {ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} updated to v{updated_ext['version']:<{INFO_OFFSET}}", log=_log)
+                    f"\t{ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} updated to v{updated_ext['version']:<{INFO_OFFSET}}", prefix=False, log=_log)
 
         else:
             # no metadata found, therefore store the original extension
@@ -407,7 +407,7 @@ def _get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=No
 
             # print message to the user
             print_msg(
-                f"Package {ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} {'info not found':<{INFO_OFFSET}}", log=_log)
+                f"\t{ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} {'info not found':<{INFO_OFFSET}}", prefix=False, log=_log)
 
         # store the updated extension
         updated_exts_list.append(updated_ext)
@@ -525,11 +525,6 @@ def _get_exts_list_class(ec):
         if easyblock and (easyblock == 'PythonBundle'):
             exts_list_class = 'PythonPackage'
 
-    if exts_list_class:
-        print_msg("Found extension list class: %s" % exts_list_class, log=_log)
-    else:
-        print_warning("No extension list class found in Easyconfig...", log=_log)
-
     return exts_list_class
 
 
@@ -553,10 +548,8 @@ def _get_bioconductor_version(ec):
 
     if match:
         bioconductor_version = match.group(1)
-        print_msg("Using Bioconductor v%s..." % (bioconductor_version), log=_log)
     else:
         bioconductor_version = None
-        print_msg("'local_biocver' parameter not set in easyconfig. Bioconductor packages will not be considered...", log=_log)
 
     return bioconductor_version
 
@@ -601,23 +594,25 @@ def update_exts_list(ecs):
     for ec in ecs:
 
         # welcome message
-        print()
-        print_msg("UPDATING EASYCONFIG %s" % ec['spec'], log=_log)
+        print_msg("\nUPDATING EASYCONFIG EXTENSIONS", prefix=False, log=_log)
 
         # get the extension list
-        print_msg("Getting extension list...", log=_log)
+        print_msg("Getting extension list: ", newline=False, log=_log)
         exts_list = _get_exts_list(ec)
+        print_msg(f"{len(exts_list)} extensions found", prefix=False, log=_log)
 
         # get the extension's list class
-        print_msg("Getting extension's list class...", log=_log)
+        print_msg("Getting extension's class: ", newline=False, log=_log)
         exts_defaultclass = _get_exts_list_class(ec)
+        print_msg(f"{exts_defaultclass}", prefix=False, log=_log)
 
         # get the Bioconductor version
-        print_msg("Getting Bioconductor version (if any)...", log=_log)
+        print_msg("Getting Bioconductor version: ", newline=False, log=_log)
         bioconductor_version = _get_bioconductor_version(ec)
+        print_msg(f"{'local_biocver not set. Bioconductor packages will not be considered' if not bioconductor_version else bioconductor_version}", prefix=False, log=_log)
 
         # get a new exts_list with all extensions to their latest version.
-        print_msg("Updating extension list...", log=_log)
+        print_msg("Updating extension...", log=_log)
         updated_exts_list = _get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version)
 
         # get new easyconfig file with the updated extensions list
@@ -633,4 +628,4 @@ def update_exts_list(ecs):
         write_file(ec['spec'], updated_easyconfig)
 
         # success message
-        print_msg('EASYCONFIG SUCCESSFULLY UPDATED!\n', log=_log)
+        print_msg('EASYCONFIG SUCCESSFULLY UPDATED!\n', prefix=False, log=_log)
