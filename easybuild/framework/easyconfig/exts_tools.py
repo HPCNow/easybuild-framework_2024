@@ -558,7 +558,7 @@ def _get_completed_R_exts_list(exts_list, bioconductor_version=None, installed_e
         # get the values of the extension
         ext_name, ext_version, ext_options = _get_extension_values(ext)
 
-        print_msg(f"\t{ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}}}", prefix=False, log=_log)
+        print_msg(f"\t{ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}}", prefix=False, log=_log)
 
         # get metadata of the extension
         metadata = _get_pkg_metadata(pkg_class="RPackage",
