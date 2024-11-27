@@ -526,8 +526,6 @@ def _get_completed_R_exts_list(exts_list, bioconductor_version=None, installed_e
     # check if the exts_list is empty
     if not exts_list:
         raise EasyBuildError("No exts_list provided for completing")
-    
-    print_msg("Searching for dependencies of the extensions...", log=_log)
 
     # get the dependendy tree. i.e. list of dependencies for each extension
     dependendy_tree = []
@@ -1105,7 +1103,7 @@ def complete_exts_list(ecs):
         print_msg(f"{'local_biocver not set. Bioconductor packages will not be considered' if not bioconductor_version else bioconductor_version}", prefix=False, log=_log)
 
         # get a new exts_list with all extensions to their latest version.
-        print_msg("Completing extension list...", log=_log)
+        print_msg("Searching for dependencies of the extensions...", log=_log)
         completed_exts_list = _get_completed_exts_list(exts_list, exts_defaultclass, installed_exts, bioconductor_version)
 
         # get new easyconfig file with the updated extensions list
