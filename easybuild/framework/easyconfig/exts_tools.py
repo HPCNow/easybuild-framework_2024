@@ -56,7 +56,7 @@ BIOCONDUCTOR_ANNOTATION_URL = "data/annotation/packages.json"
 BIOCONDUCTOR_EXPERIMENT_URL = "data/experiment/packages.json"
 
 # offsets for printing the package information
-PKG_NAME_OFFSET = 15
+PKG_NAME_OFFSET = 18
 PKG_VERSION_OFFSET = 10
 INFO_OFFSET = 20
 
@@ -402,7 +402,7 @@ def _get_R_extension_dependencies(extension, bioconductor_version=None, exts_lis
     :param bioconductor_version: bioconductor's version to use (if any)
     :param exts_list: list of extensions of the current EasyConfig (if any)
     :param installed_exts: list of installed extensions by dependencies (if any)
-    :param processed_exts: list of extensions already processed (if any)
+    :param processed_exts: list of extensions already processed
 
     :return: list of dependencies of the given R extension
     """
@@ -462,11 +462,23 @@ def _get_R_extension_dependencies(extension, bioconductor_version=None, exts_lis
                 if ext[0].lower() == dep_name.lower():
                     is_in_exts_list = True
                     print_msg(
-                        f"\t{dep_name:<{PKG_NAME_OFFSET}} is in the original exts_list. RECOMMENDATION: Consider removing {dep_name} from the original exts_list", log=_log)
+                        f"  {dep_name:<{PKG_NAME_OFFSET}} is in the original exts_list. RECOMMENDATION: Consider removing {dep_name} from the original exts_list", prefix=False, log=_log)
                     break
             
             # if the dependency is in the exts_list, then skip
             if is_in_exts_list:
+                continue
+
+            # check if the dependency is in the exclude list
+            is_excluded = False
+            for exclude_ext in EXCLUDE_R_LIST:
+                if exclude_ext.lower() == dep_name.lower():
+                    is_excluded = True
+                    print_msg(f"  {dep_name:<{PKG_NAME_OFFSET}} is blacklisted", prefix=False, log=_log)
+                    continue
+
+            # if the dependency is excluded, then skip
+            if is_excluded:
                 continue
 
             # check if the dependency is already installed by a dependency
@@ -476,27 +488,15 @@ def _get_R_extension_dependencies(extension, bioconductor_version=None, exts_lis
                 if inst_ext_name.lower() == dep_name.lower():
                     is_installed = True
                     print_msg(
-                        f"\t{dep_name:<{PKG_NAME_OFFSET}} already installed by dependency: {inst_ext_options['easyconfig_path']}", log=_log)
+                        f"  {dep_name:<{PKG_NAME_OFFSET}} installed by dependency: {inst_ext_options['easyconfig_path']}", prefix=False, log=_log)
                     break
 
             # if the dependency is already installed, then skip
             if is_installed:
                 continue
 
-            # check if the dependency is in the exclude list
-            is_excluded = False
-            for exclude_ext in EXCLUDE_R_LIST:
-                if exclude_ext.lower() == dep_name.lower():
-                    is_excluded = True
-                    print_msg(f"\t{dep_name:<{PKG_NAME_OFFSET}} is in the exclude list", log=_log)
-                    continue
-
-            # if the dependency is excluded, then skip
-            if is_excluded:
-                continue
-
-            print_msg(f"\t{dep_name} added as dependency")
-
+            print_msg(f"  {dep_name:<{PKG_NAME_OFFSET}} added as dependency", prefix=False, log=_log)
+            
             # build the metadata dependency as extension getting the last version
             dep_name = {'name': dep_name, 'version': None, 'options': {}}
 
@@ -526,23 +526,21 @@ def _get_completed_R_exts_list(exts_list, bioconductor_version=None, installed_e
     # check if the exts_list is empty
     if not exts_list:
         raise EasyBuildError("No exts_list provided for completing")
-
-    # init variables
-    dependendy_tree = []
-    complete_exts_list = []
-    processed_exts = []
+    
+    print_msg("Searching for dependencies of the extensions...", log=_log)
 
     # get the dependendy tree. i.e. list of dependencies for each extension
+    dependendy_tree = []
     for ext in exts_list:
 
         # get the values of the extension
         ext_name, ext_version, ext_options = _get_extension_values(ext)
 
         print()
-        print_msg("Processing %s. Dependencies:" % ext_name, log=_log)
+        print_msg("Dependencies of '%s':" % ext_name, log=_log)
 
         # get dependencies of the extension
-        dependencies = _get_R_extension_dependencies(ext, bioconductor_version, exts_list, installed_exts, processed_exts)
+        dependencies = _get_R_extension_dependencies(ext, bioconductor_version, exts_list, installed_exts)
 
         # store the dependencies in the complete list
         dependendy_tree.extend(dependencies)
@@ -550,14 +548,17 @@ def _get_completed_R_exts_list(exts_list, bioconductor_version=None, installed_e
         # store the extension in the complete list
         dependendy_tree.append({"name": ext_name, "version": ext_version, "options": ext_options})
 
-    # aesthetic terminal print
     print()
+    print_msg("List of extensions with their dependencies on top...", log=_log)
 
     # go over the dependency tree and fill the version and checksums
+    complete_exts_list = []
     for ext in dependendy_tree:
 
         # get the values of the extension
         ext_name, ext_version, ext_options = _get_extension_values(ext)
+
+        print_msg(f"  {ext_name:<{PKG_NAME_OFFSET}} v{ext_version:<{PKG_VERSION_OFFSET}}", prefix=False, log=_log)
 
         # get metadata of the extension
         metadata = _get_pkg_metadata(pkg_class="RPackage",
@@ -569,6 +570,9 @@ def _get_completed_R_exts_list(exts_list, bioconductor_version=None, installed_e
         if metadata:
             ext = _format_metadata_as_extension("RPackage", metadata, bioconductor_version)
             complete_exts_list.append(ext)
+
+    # aesthetic terminal print
+    print()
 
     # return the complete list of extensions
     return complete_exts_list
@@ -810,11 +814,6 @@ def _get_exts_list_class(ec):
         if easyblock and (easyblock == 'PythonBundle'):
             exts_list_class = 'PythonPackage'
 
-    if exts_list_class:
-        print_msg("Found extension list class: %s" % exts_list_class, log=_log)
-    else:
-        print_warning("No extension list class found in Easyconfig...", log=_log)
-
     return exts_list_class
 
 
@@ -838,10 +837,8 @@ def _get_bioconductor_version(ec):
 
     if match:
         bioconductor_version = match.group(1)
-        print_msg("Using Bioconductor v%s..." % (bioconductor_version), log=_log)
     else:
         bioconductor_version = None
-        print_msg("'local_biocver' parameter not set in easyconfig. Bioconductor packages will not be considered...", log=_log)
 
     return bioconductor_version
 
@@ -1088,12 +1085,14 @@ def complete_exts_list(ecs):
         print_msg("Easyconfig: %s" % ec['spec'], log=_log)
 
         # get the extension list
-        print_msg("Getting extension list...", log=_log)
+        print_msg("Getting extension list: ", newline=False, log=_log)
         exts_list = _get_exts_list(ec)
+        print_msg(f"{len(exts_list)} extensions found.", prefix=False, log=_log)
 
         # get the extension's list class
-        print_msg("Getting extension's list class...", log=_log)
+        print_msg("Getting extension's class: ", newline=False, log=_log)
         exts_defaultclass = _get_exts_list_class(ec)
+        print_msg(f"{exts_defaultclass}", prefix=False, log=_log)
 
         # get the extensions installed by dependencies
         print_msg("Getting extensions installed by dependencies or build dependencies...", log=_log)
@@ -1101,8 +1100,9 @@ def complete_exts_list(ecs):
         print_msg(f"\tInstalled extensions found: {len(installed_exts)}", prefix=False, log=_log)
 
         # get the Bioconductor version
-        print_msg("Getting Bioconductor version (if any)...", log=_log)
+        print_msg("Getting Bioconductor version: ", newline=False, log=_log)
         bioconductor_version = _get_bioconductor_version(ec)
+        print_msg(f"{'local_biocver not set. Bioconductor packages will not be considered' if not bioconductor_version else bioconductor_version}", prefix=False, log=_log)
 
         # get a new exts_list with all extensions to their latest version.
         print_msg("Completing extension list...", log=_log)
