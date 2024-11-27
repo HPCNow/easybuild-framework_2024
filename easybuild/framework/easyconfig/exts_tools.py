@@ -462,7 +462,7 @@ def _get_R_extension_dependencies(extension, bioconductor_version=None, exts_lis
                 if ext[0].lower() == dep_name.lower():
                     is_in_exts_list = True
                     print_msg(
-                        f"  {dep_name:<{PKG_NAME_OFFSET}} is in the original exts_list. RECOMMENDATION: Consider removing {dep_name} from the original exts_list", prefix=False, log=_log)
+                        f"\t{dep_name:<{PKG_NAME_OFFSET}} is in the original exts_list. RECOMMENDATION: Consider removing {dep_name} from the original exts_list", prefix=False, log=_log)
                     break
             
             # if the dependency is in the exts_list, then skip
@@ -474,7 +474,7 @@ def _get_R_extension_dependencies(extension, bioconductor_version=None, exts_lis
             for exclude_ext in EXCLUDE_R_LIST:
                 if exclude_ext.lower() == dep_name.lower():
                     is_excluded = True
-                    print_msg(f"  {dep_name:<{PKG_NAME_OFFSET}} is blacklisted", prefix=False, log=_log)
+                    print_msg(f"\t{dep_name:<{PKG_NAME_OFFSET}} is blacklisted", prefix=False, log=_log)
                     continue
 
             # if the dependency is excluded, then skip
@@ -488,14 +488,14 @@ def _get_R_extension_dependencies(extension, bioconductor_version=None, exts_lis
                 if inst_ext_name.lower() == dep_name.lower():
                     is_installed = True
                     print_msg(
-                        f"  {dep_name:<{PKG_NAME_OFFSET}} installed by dependency: {inst_ext_options['easyconfig_path']}", prefix=False, log=_log)
+                        f"\t{dep_name:<{PKG_NAME_OFFSET}} installed by dependency: {inst_ext_options['easyconfig_path']}", prefix=False, log=_log)
                     break
 
             # if the dependency is already installed, then skip
             if is_installed:
                 continue
 
-            print_msg(f"  {dep_name:<{PKG_NAME_OFFSET}} added as dependency", prefix=False, log=_log)
+            print_msg(f"\t{dep_name:<{PKG_NAME_OFFSET}} added as dependency", prefix=False, log=_log)
             
             # build the metadata dependency as extension getting the last version
             dep_name = {'name': dep_name, 'version': None, 'options': {}}
@@ -558,7 +558,7 @@ def _get_completed_R_exts_list(exts_list, bioconductor_version=None, installed_e
         # get the values of the extension
         ext_name, ext_version, ext_options = _get_extension_values(ext)
 
-        print_msg(f"  {ext_name:<{PKG_NAME_OFFSET}} v{ext_version:<{PKG_VERSION_OFFSET}}", prefix=False, log=_log)
+        print_msg(f"\t{ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}}}", prefix=False, log=_log)
 
         # get metadata of the extension
         metadata = _get_pkg_metadata(pkg_class="RPackage",
