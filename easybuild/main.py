@@ -556,7 +556,7 @@ def process_eb_args(eb_args, eb_go, cfg_settings, modtool, testing, init_session
     elif options.complete_exts_list:
         complete_exts_list(ordered_ecs)
         return True
-    
+
     # update all extensions in exts_list to the latest version and exit
     if options.update_exts_list:
         update_exts_list(ordered_ecs)
