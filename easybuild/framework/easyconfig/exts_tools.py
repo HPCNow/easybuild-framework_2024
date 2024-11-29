@@ -541,6 +541,88 @@ def _print_extension(extension):
         f"\t{name:<{PKG_NAME_OFFSET}} v{version:<{PKG_VERSION_OFFSET}} checksum: {checksum:<{CHECKSUM_OFFSET}}", prefix=False, log=_log)
 
 
+def _fulfill_exts_list(pkg_class, exts_list, bioconductor_version=None):
+    """
+    Fulfill the exts_list with the version and checksums of the extensions.
+
+    :param pkg_class: package class (RPackage, PythonPackage)
+    :param exts_list: list of extensions to fulfill
+    :param bioconductor_version: bioconductor version to use (if any)
+
+    :return: list of extensions fulfilled
+    """
+
+    if not pkg_class:
+        raise EasyBuildError("No package class provided to fulfill the exts_list")
+    
+    if not exts_list:
+        raise EasyBuildError("No exts_list provided to fulfill")
+
+    # init variables
+    fulfilled_exts_list = []
+
+    print_msg("Fulfilling exts_list...", log=_log)
+
+    for ext in exts_list:
+
+        # get the values of the extension
+        ext_name, ext_version, _ = _get_extension_values(ext)
+
+        # get metadata of the extension
+        metadata = _get_pkg_metadata(pkg_class=pkg_class,
+                                     pkg_name=ext_name,
+                                     pkg_version=ext_version,
+                                     bioc_version=bioconductor_version)
+
+        # process the metadata, format it as an extension, and store it
+        if metadata:
+            ext = _format_metadata_as_extension(pkg_class, metadata, bioconductor_version)
+            fulfilled_exts_list.append(ext)
+            _print_extension(ext)
+
+    # return the complete list of extensions
+    return fulfilled_exts_list
+
+
+def _delete_duplicated_extensions(exts_list):
+    """
+    Delete duplicated extensions from the list.
+
+    :param exts_list: list of extensions to delete duplicates from
+
+    :return: list of extensions without duplicates
+    """
+ 
+    if not exts_list:
+        raise EasyBuildError("No exts_list provided to delete duplicates")
+
+    # init variables
+    cleaned_exts_list = []
+
+    print()
+    print_msg("Deleting duplicates...", log=_log)
+
+    for ext in exts_list:
+        # get the values of the extension
+        ext_name, _, _ = _get_extension_values(ext)
+
+        # check if the extension is already in the cleaned list
+        is_in_cleaned_list = False
+        for cleaned_ext in cleaned_exts_list:
+            cleaned_ext_name, _, _ = _get_extension_values(cleaned_ext)
+            if cleaned_ext_name.lower() == ext_name.lower():
+                is_in_cleaned_list = True
+                break
+
+        # if the extension is not in the cleaned list, then append it
+        if is_in_cleaned_list:
+            continue
+
+        # append the extension to the cleaned list
+        cleaned_exts_list.append(ext)
+
+    return cleaned_exts_list
+
 def _get_completed_R_exts_list(exts_list, bioconductor_version=None, installed_exts=[]):
     """
     Complete the R extensions list with its dependencies in correct order.
@@ -556,8 +638,10 @@ def _get_completed_R_exts_list(exts_list, bioconductor_version=None, installed_e
     if not exts_list:
         raise EasyBuildError("No exts_list provided for completing")
 
-    # get the dependendy tree. i.e. list of dependencies for each extension
+    # init variables
     completed_exts_list = []
+
+    # get the dependendy tree. i.e. list of dependencies for each extension
     for ext in exts_list:
 
         # get the values of the extension
@@ -575,53 +659,7 @@ def _get_completed_R_exts_list(exts_list, bioconductor_version=None, installed_e
         # store the extension in the complete list
         completed_exts_list.append({"name": ext_name, "version": ext_version, "options": ext_options})
 
-    # there could be some duplicates in the dependency tree, so we need to clean them
-    print()
-    print_msg("Deleting duplicates...", log=_log)
-
-    completed_cleaned_exts_list = []
-    for ext in completed_exts_list:
-        # get the values of the extension
-        ext_name, ext_version, ext_options = _get_extension_values(ext)
-
-        # check if the extension is already in the cleaned list
-        is_in_cleaned_list = False
-        for cleaned_ext in completed_cleaned_exts_list:
-            cleaned_ext_name, _, _ = _get_extension_values(cleaned_ext)
-            if cleaned_ext_name.lower() == ext_name.lower():
-                is_in_cleaned_list = True
-                break
-
-        # if the extension is not in the cleaned list, then append it
-        if is_in_cleaned_list:
-            continue
-
-        # append the extension to the cleaned list
-        completed_cleaned_exts_list.append(ext)
-
-    print_msg("Fulfilling exts_list...", log=_log)
-
-    # go over the dependency tree and fill the version and checksums
-    complete_cleaned_fulfilled_exts_list = []
-    for ext in completed_cleaned_exts_list:
-
-        # get the values of the extension
-        ext_name, ext_version, ext_options = _get_extension_values(ext)
-
-        # get metadata of the extension
-        metadata = _get_pkg_metadata(pkg_class="RPackage",
-                                     pkg_name=ext_name,
-                                     pkg_version=ext_version,
-                                     bioc_version=bioconductor_version)
-
-        # process the metadata, format it as an extension, and store it
-        if metadata:
-            ext = _format_metadata_as_extension("RPackage", metadata, bioconductor_version)
-            complete_cleaned_fulfilled_exts_list.append(ext)
-            _print_extension(ext)
-
-    # return the complete list of extensions
-    return complete_cleaned_fulfilled_exts_list
+    return completed_exts_list
 
 
 def _get_completed_exts_list(exts_list, exts_defaultclass, installed_exts, bioconductor_version=None):
@@ -636,9 +674,6 @@ def _get_completed_exts_list(exts_list, exts_defaultclass, installed_exts, bioco
     :return: list with extensions updated to their latest versions.
     """
 
-    # init variables
-    completed_exts_list = []
-
     # check if the exts_list is empty
     if not exts_list:
         raise EasyBuildError("No exts_list provided for completing")
@@ -647,15 +682,23 @@ def _get_completed_exts_list(exts_list, exts_defaultclass, installed_exts, bioco
     if not exts_defaultclass:
         raise EasyBuildError("No exts_defaultclass provided for completing")
 
-    if exts_defaultclass == "RPackage":
-        completed_exts_list = _get_completed_R_exts_list(exts_list, bioconductor_version, installed_exts)
-    elif exts_defaultclass == "PythonPackage":
-        # _complete_python_exts_list(exts_list, installed_exts)
-        raise EasyBuildError("--complete-exts-list not implemented for PythonPackage yet")
-    else:
-        raise EasyBuildError("exts_defaultclass %s not supported" % exts_defaultclass)
+    # init variables
+    final_exts_list = []
 
-    return completed_exts_list
+    if exts_defaultclass == "RPackage":
+        # get the full list of extensions with their dependencies
+        completed_exts_list = _get_completed_R_exts_list(exts_list, bioconductor_version, installed_exts)
+        
+        # remove duplicated extensions
+        cleaned_exts_list = _delete_duplicated_extensions(completed_exts_list)
+        
+        # fulfill the exts_list with the version and checksums of the extensions
+        final_exts_list = _fulfill_exts_list(exts_defaultclass, cleaned_exts_list, bioconductor_version)
+
+    else:
+        raise EasyBuildError("exts_defaultclass %s not supported yet" % exts_defaultclass)
+
+    return final_exts_list
 
 
 def _get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=None):
