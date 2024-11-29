@@ -563,7 +563,7 @@ def process_eb_args(eb_args, eb_go, cfg_settings, modtool, testing, init_session
         return True
 
     # check the extensions already being installed by dependencies and exit
-    if options.check_installed_exts:
+    if options.check_exts_list:
         check_exts_list(ordered_ecs)
         return True
 
