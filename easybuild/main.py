@@ -55,7 +55,7 @@ from easybuild.framework.easyconfig import easyconfig
 from easybuild.framework.easystack import parse_easystack
 from easybuild.framework.easyconfig.easyconfig import clean_up_easyconfigs
 from easybuild.framework.easyconfig.easyconfig import fix_deprecated_easyconfigs, verify_easyconfig_filename
-from easybuild.framework.easyconfig.exts_tools import complete_exts_list, update_exts_list, update_exts_list
+from easybuild.framework.easyconfig.exts_tools import complete_exts_list, update_exts_list, check_exts_list
 from easybuild.framework.easyconfig.style import cmdline_easyconfigs_style_check
 from easybuild.framework.easyconfig.tools import categorize_files_by_type, dep_graph, det_copy_ec_specs
 from easybuild.framework.easyconfig.tools import det_easyconfig_paths, dump_env_script, get_paths_for
