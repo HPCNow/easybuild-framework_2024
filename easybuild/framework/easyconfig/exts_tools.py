@@ -470,18 +470,6 @@ def _get_R_extension_dependencies(extension, bioconductor_version=None, exts_lis
             if is_in_exts_list:
                 continue
 
-            # check if the dependency is in the exclude list
-            is_excluded = False
-            for exclude_ext in EXCLUDE_R_LIST:
-                if exclude_ext.lower() == dep_name.lower():
-                    is_excluded = True
-                    print_msg(f"\t{dep_name:<{PKG_NAME_OFFSET}} is blacklisted", prefix=False, log=_log)
-                    continue
-
-            # if the dependency is excluded, then skip
-            if is_excluded:
-                continue
-
             # check if the dependency is already installed by a dependency
             is_installed = False
             for inst_ext in installed_exts:
@@ -494,6 +482,18 @@ def _get_R_extension_dependencies(extension, bioconductor_version=None, exts_lis
 
             # if the dependency is already installed, then skip
             if is_installed:
+                continue
+
+            # check if the dependency is in the exclude list
+            is_excluded = False
+            for exclude_ext in EXCLUDE_R_LIST:
+                if exclude_ext.lower() == dep_name.lower():
+                    is_excluded = True
+                    print_msg(f"\t{dep_name:<{PKG_NAME_OFFSET}} is blacklisted", prefix=False, log=_log)
+                    continue
+
+            # if the dependency is excluded, then skip
+            if is_excluded:
                 continue
 
             print_msg(f"\t{dep_name:<{PKG_NAME_OFFSET}} added as dependency", prefix=False, log=_log)
@@ -554,7 +554,7 @@ def _fulfill_exts_list(pkg_class, exts_list, bioconductor_version=None):
 
     if not pkg_class:
         raise EasyBuildError("No package class provided to fulfill the exts_list")
-    
+
     if not exts_list:
         raise EasyBuildError("No exts_list provided to fulfill")
 
@@ -592,7 +592,7 @@ def _delete_duplicated_extensions(exts_list):
 
     :return: list of extensions without duplicates
     """
- 
+
     if not exts_list:
         raise EasyBuildError("No exts_list provided to delete duplicates")
 
@@ -622,6 +622,7 @@ def _delete_duplicated_extensions(exts_list):
         cleaned_exts_list.append(ext)
 
     return cleaned_exts_list
+
 
 def _get_completed_R_exts_list(exts_list, bioconductor_version=None, installed_exts=[]):
     """
@@ -688,10 +689,10 @@ def _get_completed_exts_list(exts_list, exts_defaultclass, installed_exts, bioco
     if exts_defaultclass == "RPackage":
         # get the full list of extensions with their dependencies
         completed_exts_list = _get_completed_R_exts_list(exts_list, bioconductor_version, installed_exts)
-        
+
         # remove duplicated extensions
         cleaned_exts_list = _delete_duplicated_extensions(completed_exts_list)
-        
+
         # fulfill the exts_list with the version and checksums of the extensions
         final_exts_list = _fulfill_exts_list(exts_defaultclass, cleaned_exts_list, bioconductor_version)
 
