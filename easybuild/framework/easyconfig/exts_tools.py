@@ -1087,7 +1087,7 @@ def update_exts_list(ecs):
         print_msg('EASYCONFIG SUCCESSFULLY UPDATED!\n', prefix=False, log=_log)
 
 
-def check_installed_exts(ecs):
+def check_exts_list(ecs):
     """
     Print the list of exts_list extensions that are already being installed by dependencies or build dependencies
 

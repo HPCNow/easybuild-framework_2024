@@ -695,7 +695,7 @@ class EasyBuildOptions(GeneralOption):
             'terse': ("Terse output (machine-readable)", None, 'store_true', False),
             'complete-exts-list': ("Complete the exts_list of an easyconfig file", None ,'store_true', False),  
             'update-exts-list': ("Update the exts_list of an easyconfig file", None, 'store_true', False),
-            'check-installed-exts': ("Check if an extensions is already being installed by a dependency", None, 'store_true', False),
+            'check-exts-list': ("Check if an extensions is already being installed by a dependency", None, 'store_true', False),
             'easystack': ("Path to easystack file in YAML format, specifying details of a software stack",
                           None, 'store', None),
         })
