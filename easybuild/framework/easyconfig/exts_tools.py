@@ -389,9 +389,9 @@ def _get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=No
 
         # get metadata of the latest version of the extension
         metadata = _get_pkg_metadata(pkg_class=exts_defaultclass,
-                                    pkg_name=ext_name,
-                                    pkg_version=None,
-                                    bioc_version=bioconductor_version)
+                                     pkg_name=ext_name,
+                                     pkg_version=None,
+                                     bioc_version=bioconductor_version)
 
         if metadata:
             # process the metadata and format it as an extension
@@ -493,6 +493,7 @@ def _get_dependencies(ec):
 
     app: EasyBlock = get_easyblock_instance(ec)
     return app.cfg.dependencies()
+
 
 def _get_exts_list(ec):
     """
@@ -662,7 +663,7 @@ def _get_installed_exts(ec, ec_dep=None, processed_deps=[]):
         raise EasyBuildError("No EasyConfig instance provided to retrieve extensions from")
 
     print_msg(f"\r\tDependencies processed: {len(processed_deps)}", newline=False, prefix=False, log=_log)
-    
+
     # init variable to store the installed extensions
     installed_exts = []
 
@@ -727,8 +728,9 @@ def _get_installed_exts(ec, ec_dep=None, processed_deps=[]):
 
     # restore the original value of the terse option
     update_build_option('terse', terse)
-    
+
     return installed_exts
+
 
 def update_exts_list(ecs):
     """
@@ -776,7 +778,7 @@ def update_exts_list(ecs):
         print_msg('EASYCONFIG SUCCESSFULLY UPDATED!\n', prefix=False, log=_log)
 
 
-def check_installed_exts(ecs):
+def check_exts_list(ecs):
     """
     Print the list of exts_list extensions that are already being installed by dependencies or build dependencies
 
