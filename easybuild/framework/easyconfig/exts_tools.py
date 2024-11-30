@@ -140,6 +140,33 @@ def _topological_sort(graph):
     else:
         raise ValueError("Graph has at least one cycle, topological sort not possible")
 
+def _get_dependency_dict(graph):
+    """
+    Get a dictionary with the dependencies of the given graph.
+
+    :param graph: graph to build the dictionary from
+
+    :return: dictionary with the dependencies of the given graph
+    """
+
+    if not graph:
+        raise EasyBuildError("No graph provided to build the dependency dictionary")
+    
+    # get the edges and nodes of the graph
+    edges, nodes = graph["edges"], graph["nodes"]
+
+    # initialize the dictionary
+    dependency_dict = {node: [] for node in nodes}
+    
+    # Add dependencies to the dictionary
+    for from_node, to_node in edges:
+        if from_node not in dependency_dict:
+            dependency_dict[from_node] = []
+        if to_node not in dependency_dict:
+            dependency_dict[to_node] = []
+        dependency_dict[to_node].append(from_node)
+    
+    return dependency_dict
 
 def _get_R_pkg_checksum(pkg_metadata, bioconductor_version=None):
     """
@@ -1245,3 +1272,51 @@ def complete_exts_list(ecs):
 
         # success message
         print_msg('EASYCONFIG SUCCESSFULLY COMPLETED!\n', prefix=False, log=_log)
+
+
+def parallel_exts_list(ecs):
+    """
+    Test on parallel installation of extensions
+
+    :param ecs: list of EasyConfig instances to complete dependencies for
+    """
+
+    for ec in ecs:
+
+        # welcome message
+        print_msg("\nPARALLEL EASYCONFIG EXTENSIONS", prefix=False, log=_log)
+
+        print_msg("Easyconfig: %s" % ec['spec'], log=_log)
+
+        # get the extension list
+        print_msg("Getting extension list: ", newline=False, log=_log)
+        exts_list = _get_exts_list(ec)
+        print_msg(f"{len(exts_list)} extensions found.", prefix=False, log=_log)
+
+        # get the extension's list class
+        print_msg("Getting extension's class: ", newline=False, log=_log)
+        exts_defaultclass = _get_exts_list_class(ec)
+        print_msg(f"{exts_defaultclass}", prefix=False, log=_log)
+
+        # get the Bioconductor version
+        print_msg("Getting Bioconductor version: ", newline=False, log=_log)
+        bioconductor_version = _get_bioconductor_version(ec)
+        print_msg(f"{'local_biocver not set. Bioconductor packages will not be considered' if not bioconductor_version else bioconductor_version}", prefix=False, log=_log)
+
+        # get the extensions installed by dependencies
+        print_msg("Getting extensions installed by dependencies or build dependencies...", log=_log)
+        installed_exts = _get_installed_exts(ec)
+        print_msg(f"\tInstalled extensions found: {len(installed_exts)}", prefix=False, log=_log)
+
+        if exts_defaultclass != "RPackage":
+            raise EasyBuildError("exts_defaultclass %s not supported yet" % exts_defaultclass)
+
+        # get the dependency graph of the extensions
+        dep_graph = _get_R_dependency_graph(exts_list, bioconductor_version, installed_exts)
+
+        dep_dict = _get_dependency_dict(dep_graph)
+
+        print(dep_dict)
+
+        # success message
+        print_msg('PARALLEL SUCCESS!\n', prefix=False, log=_log)
