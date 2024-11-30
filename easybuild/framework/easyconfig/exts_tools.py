@@ -116,6 +116,9 @@ def _topological_sort(graph):
     :return: sorted list of the graph
     """
 
+    if not graph:
+        raise EasyBuildError("No graph provided to sort")
+
     # calculate in-degree of each node
     in_degree = {node: 0 for node in graph["nodes"]}
     for from_node in graph["edges"]:
@@ -463,96 +466,81 @@ def _get_clean_pkg_values(pkg_name=None, pkg_version=None, pkg_options=None):
     return clean_name, clean_version, clean_options
 
 
-def _get_R_extension_dependencies(extension, bioconductor_version=None, exts_list=[], installed_exts=[], processed_exts=[]):
+def _get_R_extension_dependencies(ext, bioconductor_version=None, exclude_list=[], processed_exts=[], depth=1):
     """
     Process the dependencies of the given R extension.
 
-    :param extension: the extension to get dependencies from
+    :param ext: the extension to get dependencies from
     :param bioconductor_version: bioconductor's version to use (if any)
-    :param exts_list: list of extensions of the current EasyConfig (if any)
-    :param installed_exts: list of installed extensions by dependencies (if any)
+    :param exclude_list: list of extensions to exclude from the dependencies
     :param processed_exts: list of extensions already processed
+    :param depth: depth of the recursion
 
-    :return: list of dependencies of the given R extension
+    :return: list of dependencies of the given R extension except the excluded ones
     """
 
     # check if the extension is empty
-    if not extension:
+    if not ext:
         raise EasyBuildError("No extension provided to get the dependencies from")
 
+    # if the extension is a string, then skip further processing
+    if isinstance(ext, str):
+        return []
+    
     # init variables
     dependencies = []
 
     # get the values of the extension
-    ext_name, ext_version, _ = _get_extension_values(extension)
-
-    # if the extension is a string, then skip further processing
-    if isinstance(extension, str):
-        return []
+    ext_name, ext_version, _ = _get_extension_values(ext)
 
     # get metadata of the version of the extension
     metadata = _get_pkg_metadata("RPackage", ext_name, ext_version, bioconductor_version)
 
     # get the dependencies of the extension
     if metadata:
-        metadata_dependencies = []
+        metadata_dep_names = []
 
         for key in ('Depends', 'Imports', 'LinkingTo'):
             if key in metadata:
                 if isinstance(metadata[key], list):
                     for item in metadata[key]:
-                        metadata_dependencies.append(item)
+                        metadata_dep_names.append(item)
                 elif isinstance(metadata[key], dict):
                     for pkg_name, _ in metadata[key].items():
-                        metadata_dependencies.append(pkg_name)
+                        metadata_dep_names.append(pkg_name)
 
-        for dep_name in metadata_dependencies:
+        for dep_name in metadata_dep_names:
 
             # clean the dependency values
             dep_name, _, _ = _get_clean_pkg_values(dep_name)
 
-            # check if the dependency already processed
+            # if the dependency is in the exclude list, then skip
+            is_excluded = False
+            for excluded_ext in exclude_list:
+                if excluded_ext.lower() == dep_name.lower():
+                    is_excluded = True
+                    break
+
+            if is_excluded:
+                continue
+
+            # append the dependency to the list
+            dependencies.append((dep_name, ext_name))
+
+            # if the dependency is already processed, then skip
             is_processed = False
             for proc_ext in processed_exts:
                 if proc_ext.lower() == dep_name.lower():
                     is_processed = True
                     break
 
-            # if the dependency is already processed, then skip
             if is_processed:
                 continue
 
             # append the extension to the list of processed extensions
             processed_exts.append(dep_name)
 
-            print_msg(f"  {dep_name:<{PKG_NAME_OFFSET}}", prefix=False, newline=False, log=_log)
-            
-            # check if the dependency is already installed by a dependency
-            is_installed = False
-            for inst_ext in installed_exts:
-                inst_ext_name, _, inst_ext_options = _get_extension_values(inst_ext)
-                if inst_ext_name.lower() == dep_name.lower():
-                    is_installed = True
-                    break
-
-            # if the dependency is already installed, then skip
-            if is_installed:
-                print_msg(f"installed by dependency: {inst_ext_options['easyconfig_path']}", prefix=False, log=_log)
-                continue
-
-            # check if the dependency is in the exclude list
-            is_excluded = False
-            for exclude_ext in EXCLUDE_R_LIST:
-                if exclude_ext.lower() == dep_name.lower():
-                    is_excluded = True
-                    continue
-
-            # if the dependency is excluded, then skip
-            if is_excluded:
-                print_msg(f"is blacklisted", prefix=False, log=_log)
-                continue
-
-            print_msg(f"added as dependency", prefix=False, log=_log)
+            print_msg(f"{'├──' * (depth-1)}└──{dep_name}", prefix=False, log=_log)
 
             # build the metadata dependency as extension getting the last version
             dep = {'name': dep_name, 'version': None, 'options': {}}
@@ -560,15 +548,12 @@ def _get_R_extension_dependencies(extension, bioconductor_version=None, exts_lis
             # recursively get dependencies of dependency
             deps = _get_R_extension_dependencies(dep,
                                                  bioconductor_version,
-                                                 exts_list,
-                                                 installed_exts,
-                                                 processed_exts)
+                                                 exclude_list,
+                                                 processed_exts,
+                                                 depth + 1)
 
             # append the recursive found dependencies to the list
             dependencies.extend(deps)
-
-            # append the actual dependency to the list
-            dependencies.append((dep_name, ext_name))
 
     return dependencies
 
@@ -649,13 +634,13 @@ def _fulfill_exts_list(pkg_class, exts_list, exts_list_to_fulfill, bioconductor_
     return fulfilled_exts_list
 
 
-def _get_R_dependency_graph(exts_list, bioconductor_version=None, installed_exts=[]):
+def _get_R_dependency_graph(exts_list, bioconductor_version=None, exclude_list=[]):
     """
     Complete the R extensions list with its dependencies in correct order.
 
     :param exts_list: list of extensions to be updated.
-    :param bioconductor_version: bioconductor's version to use (if any)
-    :param installed_exts: list of installed extensions by dependencies (if any)
+    :param bioconductor_version: bioconductor's version to use
+    :param exclude_list: list of excluded extensions
 
     :return: list of extensions for a complete exts_list
     """
@@ -668,17 +653,19 @@ def _get_R_dependency_graph(exts_list, bioconductor_version=None, installed_exts
     edges = []
     nodes = []
 
+    # aesthetic terminal print
+    print()
+
     # get the dependendy tree. i.e. list of dependencies for each extension
     for ext in exts_list:
 
         # get the values of the extension
         ext_name, _, _ = _get_extension_values(ext)
 
-        print()
-        print_msg(f"Processing {ext_name}:", prefix=False, log=_log)
+        print_msg("%s" % ext_name, prefix=False, log=_log)
 
         # get dependencies of the extension
-        dependencies = _get_R_extension_dependencies(ext, bioconductor_version, exts_list, installed_exts)
+        dependencies = _get_R_extension_dependencies(ext, bioconductor_version, exclude_list)
 
         # append the extension to the list of nodes
         nodes.append(ext_name)
@@ -715,22 +702,25 @@ def _get_completed_exts_list(exts_list, exts_defaultclass, installed_exts, bioco
         raise EasyBuildError("No exts_defaultclass provided for completing")
 
     # init variables
-    final_exts_list = []
+    complete_exts_list = []
 
     if exts_defaultclass == "RPackage":
+        # build the exclude list
+        exclude_list = EXCLUDE_R_LIST + [ext[0] for ext in installed_exts]
+
         # get the dependency graph of the extensions
-        dep_graph = _get_R_dependency_graph(exts_list, bioconductor_version, installed_exts)
+        dep_graph = _get_R_dependency_graph(exts_list, bioconductor_version, exclude_list)
 
         # get the topological sort of the dependency graph
-        completed_exts_list = _topological_sort(dep_graph)
+        sorted_exts_list = _topological_sort(dep_graph)
 
         # fulfill the exts_list with the version and checksums of the extensions
-        final_exts_list = _fulfill_exts_list(exts_defaultclass, exts_list, completed_exts_list, bioconductor_version)
+        complete_exts_list = _fulfill_exts_list(exts_defaultclass, exts_list, sorted_exts_list, bioconductor_version)
 
     else:
         raise EasyBuildError("exts_defaultclass %s not supported yet" % exts_defaultclass)
 
-    return final_exts_list
+    return complete_exts_list
 
 
 def _get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=None):
