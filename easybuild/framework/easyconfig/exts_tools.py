@@ -510,6 +510,9 @@ def _get_R_extension_dependencies(extension, bioconductor_version=None, exts_lis
             # clean the dependency values
             dep_name, _, _ = _get_clean_pkg_values(dep_name)
 
+            # append the actual dependency to the list
+            dependencies.append((dep_name, ext_name))
+
             # check if the dependency already processed
             is_processed = False
             for proc_ext in processed_exts:
@@ -565,9 +568,6 @@ def _get_R_extension_dependencies(extension, bioconductor_version=None, exts_lis
 
             # append the recursive found dependencies to the list
             dependencies.extend(deps)
-
-            # append the actual dependency to the list
-            dependencies.append((dep_name, ext_name))
 
     return dependencies
 
