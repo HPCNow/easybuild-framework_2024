@@ -1217,15 +1217,15 @@ def complete_exts_list(ecs):
         exts_defaultclass = _get_exts_list_class(ec)
         print_msg(f"{exts_defaultclass}", prefix=False, log=_log)
 
-        # get the extensions installed by dependencies
-        print_msg("Getting extensions installed by dependencies or build dependencies...", log=_log)
-        installed_exts = _get_installed_exts(ec)
-        print_msg(f"\tInstalled extensions found: {len(installed_exts)}", prefix=False, log=_log)
-
         # get the Bioconductor version
         print_msg("Getting Bioconductor version: ", newline=False, log=_log)
         bioconductor_version = _get_bioconductor_version(ec)
         print_msg(f"{'local_biocver not set. Bioconductor packages will not be considered' if not bioconductor_version else bioconductor_version}", prefix=False, log=_log)
+
+        # get the extensions installed by dependencies
+        print_msg("Getting extensions installed by dependencies or build dependencies...", log=_log)
+        installed_exts = _get_installed_exts(ec)
+        print_msg(f"\tInstalled extensions found: {len(installed_exts)}", prefix=False, log=_log)
 
         # get a new exts_list with all extensions to their latest version.
         print_msg("Searching for dependencies of the extensions...", log=_log)
