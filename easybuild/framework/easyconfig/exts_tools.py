@@ -75,12 +75,12 @@ bioc_packages_cache = None
 _log = fancylogger.getLogger('easyblock')
 
 
-def _create_graph(edges, nodes):
+def _get_dependencies_graph(edges, nodes):
     """
     Create a graph from the given edges and nodes.
     
-    :param edges: list of edges
-    :param nodes: list of nodes
+    :param edges: list of edges (from_node, to_node) where to_node depends on from_node
+    :param nodes: list of standalone nodes
     
     :return: graph
     """
@@ -91,18 +91,17 @@ def _create_graph(edges, nodes):
     for from_node, to_node in edges:
         if from_node not in graph["nodes"]:
             graph["nodes"].add(from_node)
-            graph["edges"][from_node] = []
         if to_node not in graph["nodes"]:
             graph["nodes"].add(to_node)
-            graph["edges"][to_node] = []
-        graph["edges"][from_node].append(to_node)
+        graph["edges"][from_node] = to_node
     
     # Add standalone nodes
     if nodes:
         for node in nodes:
             if node not in graph["nodes"]:
                 graph["nodes"].add(node)
-                graph["edges"][node] = []
+            if node not in graph["edges"]:
+                graph["edges"][node] = None
 
     return graph
 
@@ -116,26 +115,26 @@ def _topological_sort(graph):
     :return: sorted list of the graph
     """
 
-    # calculate in-degree of each node
     in_degree = {node: 0 for node in graph["nodes"]}
-    for from_node in graph["edges"]:
-        for to_node in graph["edges"][from_node]:
+    
+    # Calculate in-degrees
+    for from_node, to_node in graph["edges"].items():
+        if to_node is not None:
             in_degree[to_node] += 1
 
-    # initialize queue with nodes that have in-degree 0
+    # Initialize queue with nodes that have in-degree of 0
     queue = deque([node for node in graph["nodes"] if in_degree[node] == 0])
     sorted_list = []
 
-    # perform topological sort
     while queue:
         node = queue.popleft()
         sorted_list.append(node)
-        for to_node in graph["edges"][node]:
+        if graph["edges"][node] is not None:
+            to_node = graph["edges"][node]
             in_degree[to_node] -= 1
             if in_degree[to_node] == 0:
                 queue.append(to_node)
 
-    # check if the graph has at least one cycle
     if len(sorted_list) == len(graph["nodes"]):
         return sorted_list
     else:
@@ -686,12 +685,12 @@ def _get_R_dependency_graph(exts_list, bioconductor_version=None, installed_exts
         # append the dependencies to the list of edges
         edges.extend(dependencies)
 
-    graph = _create_graph(edges, nodes)
+    dep_graph = _get_dependencies_graph(edges, nodes)
 
     # aesthetic terminal print
     print()
 
-    return graph
+    return dep_graph
 
 
 def _get_completed_exts_list(exts_list, exts_defaultclass, installed_exts, bioconductor_version=None):
