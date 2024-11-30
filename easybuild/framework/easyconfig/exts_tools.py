@@ -159,7 +159,7 @@ def _get_dependency_dict(graph):
     dependency_dict = {node: [] for node in nodes}
     
     # Add dependencies to the dictionary
-    for from_node, to_node in edges:
+    for from_node, to_node in edges.items():
         if from_node not in dependency_dict:
             dependency_dict[from_node] = []
         if to_node not in dependency_dict:
