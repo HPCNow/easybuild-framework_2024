@@ -53,6 +53,7 @@ import tempfile
 import time
 import traceback
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import easybuild.tools.environment as env
 import easybuild.tools.toolchain as toolchain
@@ -60,6 +61,7 @@ from easybuild.base import fancylogger
 from easybuild.framework.easyconfig import EASYCONFIGS_PKG_SUBDIR
 from easybuild.framework.easyconfig.easyconfig import ITERATE_OPTIONS, EasyConfig, ActiveMNS, get_easyblock_class
 from easybuild.framework.easyconfig.easyconfig import get_module_path, letter_dir_for, resolve_template
+from easybuild.framework.easyconfig.exts_tools import get_dependency_dict, topological_sort, get_exts_list, get_exts_list_class, get_bioconductor_version, get_installed_exts, get_R_dependency_graph, EXCLUDE_R_LIST
 from easybuild.framework.easyconfig.format.format import SANITY_CHECK_PATHS_DIRS, SANITY_CHECK_PATHS_FILES
 from easybuild.framework.easyconfig.parser import fetch_parameters_from_easyconfig
 from easybuild.framework.easyconfig.style import MAX_LINE_LENGTH
@@ -1878,6 +1880,70 @@ class EasyBlock(object):
 
         self.ext_instances = retained_ext_instances
 
+    def install_extension(self, ext, exts_cnt, idx, install=True):
+        """
+        Install a single extension.
+        
+        :param ext: extension instance to install
+        :param exts_cnt: total number of extensions to install
+        :param idx: index of extension in list of extensions to install
+        :param install: actually install extension, don't just prepare environment for installing
+
+        """
+
+        self.log.info("Starting extension %s", ext.name)
+
+        run_hook(SINGLE_EXTENSION, self.hooks, pre_step_hook=True, args=[ext])
+
+        # always go back to original work dir to avoid running stuff from a dir that no longer exists
+        change_dir(self.orig_workdir)
+
+        progress_info = "Installing '%s' extension (%s/%s)" % (ext.name, idx + 1, exts_cnt)
+        self.update_exts_progress_bar(progress_info)
+
+        tup = (ext.name, ext.version or '', idx + 1, exts_cnt)
+        print_msg("installing extension %s %s (%d/%d)..." % tup, silent=self.silent, log=self.log)
+        start_time = datetime.now()
+
+        if self.dry_run:
+            tup = (ext.name, ext.version, ext.__class__.__name__)
+            msg = "\n* installing extension %s %s using '%s' easyblock\n" % tup
+            self.dry_run_msg(msg)
+
+        self.log.debug("List of loaded modules: %s", self.modules_tool.list())
+
+        # prepare toolchain build environment, but only when not doing a dry run
+        # since in that case the build environment is the same as for the parent
+        if self.dry_run:
+            self.dry_run_msg("defining build environment based on toolchain (options) and dependencies...")
+        else:
+            # don't reload modules for toolchain, there is no need since they will be loaded already;
+            # the (fake) module for the parent software gets loaded before installing extensions
+            ext.toolchain.prepare(onlymod=self.cfg['onlytcmod'], silent=True, loadmod=False,
+                                    rpath_filter_dirs=self.rpath_filter_dirs)
+
+        # real work
+        if install:
+            try:
+                ext.prerun()
+                with self.module_generator.start_module_creation():
+                    txt = ext.run()
+                if txt:
+                    self.module_extra_extensions += txt
+                ext.postrun()
+            finally:
+                if not self.dry_run:
+                    ext_duration = datetime.now() - start_time
+                    if ext_duration.total_seconds() >= 1:
+                        print_msg("\t... (took %s)", time2str(ext_duration), log=self.log, silent=self.silent)
+                    elif self.logdebug or build_option('trace'):
+                        print_msg("\t... (took < 1 sec)", log=self.log, silent=self.silent)
+
+        self.update_exts_progress_bar(progress_info, progress_size=1)
+
+        run_hook(SINGLE_EXTENSION, self.hooks, post_step_hook=True, args=[ext])
+
+
     def install_extensions(self, install=True):
         """
         Install extensions.
@@ -1907,61 +1973,12 @@ class EasyBlock(object):
         """
         self.log.info("Installing extensions sequentially...")
 
+        # get total number of extensions to install
         exts_cnt = len(self.ext_instances)
 
+        # install each extension in sequence
         for idx, ext in enumerate(self.ext_instances):
-
-            self.log.info("Starting extension %s", ext.name)
-
-            run_hook(SINGLE_EXTENSION, self.hooks, pre_step_hook=True, args=[ext])
-
-            # always go back to original work dir to avoid running stuff from a dir that no longer exists
-            change_dir(self.orig_workdir)
-
-            progress_info = "Installing '%s' extension (%s/%s)" % (ext.name, idx + 1, exts_cnt)
-            self.update_exts_progress_bar(progress_info)
-
-            tup = (ext.name, ext.version or '', idx + 1, exts_cnt)
-            print_msg("installing extension %s %s (%d/%d)..." % tup, silent=self.silent, log=self.log)
-            start_time = datetime.now()
-
-            if self.dry_run:
-                tup = (ext.name, ext.version, ext.__class__.__name__)
-                msg = "\n* installing extension %s %s using '%s' easyblock\n" % tup
-                self.dry_run_msg(msg)
-
-            self.log.debug("List of loaded modules: %s", self.modules_tool.list())
-
-            # prepare toolchain build environment, but only when not doing a dry run
-            # since in that case the build environment is the same as for the parent
-            if self.dry_run:
-                self.dry_run_msg("defining build environment based on toolchain (options) and dependencies...")
-            else:
-                # don't reload modules for toolchain, there is no need since they will be loaded already;
-                # the (fake) module for the parent software gets loaded before installing extensions
-                ext.toolchain.prepare(onlymod=self.cfg['onlytcmod'], silent=True, loadmod=False,
-                                      rpath_filter_dirs=self.rpath_filter_dirs)
-
-            # real work
-            if install:
-                try:
-                    ext.prerun()
-                    with self.module_generator.start_module_creation():
-                        txt = ext.run()
-                    if txt:
-                        self.module_extra_extensions += txt
-                    ext.postrun()
-                finally:
-                    if not self.dry_run:
-                        ext_duration = datetime.now() - start_time
-                        if ext_duration.total_seconds() >= 1:
-                            print_msg("\t... (took %s)", time2str(ext_duration), log=self.log, silent=self.silent)
-                        elif self.logdebug or build_option('trace'):
-                            print_msg("\t... (took < 1 sec)", log=self.log, silent=self.silent)
-
-            self.update_exts_progress_bar(progress_info, progress_size=1)
-
-            run_hook(SINGLE_EXTENSION, self.hooks, post_step_hook=True, args=[ext])
+            self.install_extension(ext, exts_cnt, idx, install=install)
 
     def install_extensions_parallel(self, install=True):
         """
@@ -2097,6 +2114,115 @@ class EasyBlock(object):
                 else:
                     running_ext_names = ', '.join(x.name for x in running_exts[:3]) + ", ..."
                 print_msg(msg % (installed_cnt, exts_cnt, queued_cnt, running_cnt, running_ext_names), log=self.log)
+
+    def install_extensions_parallel_using_exts_tools(self, install=True):
+        """
+        Install extensions in parallel using the exts_tools module.
+
+        :param install: actually install extensions, don't just prepare environment for installing
+        """
+
+        def install_extension(extension, exts_cnt, idx, install=True):
+            """
+            Install a single extension using EasyBuild.
+            
+            :param extension: The name of the extension to install
+            :param exts_cnt: Total number of extensions to install
+            :param idx: Index of extension in list of extensions to install
+            :param install: Actually install extension, don't just prepare environment for installing
+            """
+
+            self.install_extension(extension, exts_cnt, idx, install=install)
+            return (extension, "Success")
+
+        def install_dep_graph_parallel(graph, max_workers=4):
+            """
+            Install multiple extensions in parallel using multiple cores, respecting dependencies.
+            
+            :param graph: graph of dependencies 
+            :param max_workers: Maximum number of worker threads to use
+            """
+
+            dep_dict = get_dependency_dict(graph)
+            sorted_list = topological_sort(graph)
+            exts_cnt = len(sorted_list)
+            idx = 1
+            installed = set()
+            futures = []
+
+            # TODO: check if all the extensions in the sorted list are in the exts_list
+            return
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                while sorted_list or futures:
+                    for ext_name in sorted_list:
+                        if all(dep in installed for dep in dep_dict[ext_name]):
+                            extension = ext_name # Find the extension object in the self.ext_instances list
+                            return
+                            futures.append(executor.submit(install_extension, ext_name, exts_cnt, idx, install))
+                            idx += 1
+                            sorted_list.remove(ext_name)
+
+                    for future in as_completed(futures):
+                        ext_name, output = future.result()
+                        installed.add(ext_name)
+                        print(f"Successfully installed {ext_name}")
+                        futures.remove(future)
+
+        # def update_exts_progress_bar_helper(running_exts, progress_size):
+        #     """Helper function to update extensions progress bar."""
+        #     running_exts_cnt = len(running_exts)
+        #     if running_exts_cnt > 1:
+        #         progress_info = "Installing %d extensions" % running_exts_cnt
+        #     elif running_exts_cnt == 1:
+        #         progress_info = "Installing extension "
+        #     else:
+        #         progress_info = "Not installing extensions (yet)"
+
+        #     if running_exts_cnt:
+        #         progress_info += " (%d/%d done): " % (len(installed_ext_names), exts_cnt)
+        #         progress_info += ', '.join(e.name for e in running_exts)
+
+        #     self.update_exts_progress_bar(progress_info, progress_size=progress_size)
+
+        print_msg("Installing extensions in parallel...")
+        
+        # get the Easyconfig
+        ec = self.cfg
+
+        print_msg("Easyconfig: %s" % ec['spec'], log=_log)
+        
+        # get the extension list
+        print_msg("Getting extension list: ", newline=False, log=_log)
+        exts_list = get_exts_list(ec)
+        print_msg(f"{len(exts_list)} extensions found.", prefix=False, log=_log)
+
+        # get the extension's list class
+        print_msg("Getting extension's class: ", newline=False, log=_log)
+        exts_defaultclass = get_exts_list_class(ec)
+        print_msg(f"{exts_defaultclass}", prefix=False, log=_log)
+
+        if exts_defaultclass != "RPackage":
+            raise EasyBuildError("exts_defaultclass %s not supported yet" % exts_defaultclass)
+
+        # get the Bioconductor version
+        print_msg("Getting Bioconductor version: ", newline=False, log=_log)
+        bioconductor_version = get_bioconductor_version(ec)
+        print_msg(f"{'local_biocver not set. Bioconductor packages will not be considered' if not bioconductor_version else bioconductor_version}", prefix=False, log=_log)
+
+        # get the extensions installed by dependencies
+        print_msg("Getting extensions installed by dependencies or build dependencies...", log=_log)
+        installed_exts = get_installed_exts(ec)
+        print_msg(f"\tInstalled extensions found: {len(installed_exts)}", prefix=False, log=_log)
+
+        # build the exclude list
+        exclude_list = EXCLUDE_R_LIST + [ext[0] for ext in installed_exts]
+
+        # get the dependency graph of the extensions
+        dep_graph = get_R_dependency_graph(exts_list, bioconductor_version, exclude_list)
+
+        # install the extensions in parallel
+        install_dep_graph_parallel(graph=dep_graph, max_workers=self.cfg['parallel'])
 
     #
     # MISCELLANEOUS UTILITY FUNCTIONS
