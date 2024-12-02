@@ -1889,6 +1889,7 @@ class EasyBlock(object):
         :param idx: index of extension in list of extensions to install
         :param install: actually install extension, don't just prepare environment for installing
 
+        :return: extension instance
         """
 
         self.log.info("Starting extension %s", ext.name)
@@ -1943,6 +1944,7 @@ class EasyBlock(object):
 
         run_hook(SINGLE_EXTENSION, self.hooks, post_step_hook=True, args=[ext])
 
+        return ext
 
     def install_extensions(self, install=True):
         """
@@ -2114,115 +2116,6 @@ class EasyBlock(object):
                 else:
                     running_ext_names = ', '.join(x.name for x in running_exts[:3]) + ", ..."
                 print_msg(msg % (installed_cnt, exts_cnt, queued_cnt, running_cnt, running_ext_names), log=self.log)
-
-    def install_extensions_parallel_using_exts_tools(self, install=True):
-        """
-        Install extensions in parallel using the exts_tools module.
-
-        :param install: actually install extensions, don't just prepare environment for installing
-        """
-
-        def install_extension(extension, exts_cnt, idx, install=True):
-            """
-            Install a single extension using EasyBuild.
-            
-            :param extension: The name of the extension to install
-            :param exts_cnt: Total number of extensions to install
-            :param idx: Index of extension in list of extensions to install
-            :param install: Actually install extension, don't just prepare environment for installing
-            """
-
-            self.install_extension(extension, exts_cnt, idx, install=install)
-            return (extension, "Success")
-
-        def install_dep_graph_parallel(graph, max_workers=4):
-            """
-            Install multiple extensions in parallel using multiple cores, respecting dependencies.
-            
-            :param graph: graph of dependencies 
-            :param max_workers: Maximum number of worker threads to use
-            """
-
-            dep_dict = get_dependency_dict(graph)
-            sorted_list = topological_sort(graph)
-            exts_cnt = len(sorted_list)
-            idx = 1
-            installed = set()
-            futures = []
-
-            # TODO: check if all the extensions in the sorted list are in the exts_list
-            return
-
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                while sorted_list or futures:
-                    for ext_name in sorted_list:
-                        if all(dep in installed for dep in dep_dict[ext_name]):
-                            extension = ext_name # Find the extension object in the self.ext_instances list
-                            return
-                            futures.append(executor.submit(install_extension, ext_name, exts_cnt, idx, install))
-                            idx += 1
-                            sorted_list.remove(ext_name)
-
-                    for future in as_completed(futures):
-                        ext_name, output = future.result()
-                        installed.add(ext_name)
-                        print(f"Successfully installed {ext_name}")
-                        futures.remove(future)
-
-        # def update_exts_progress_bar_helper(running_exts, progress_size):
-        #     """Helper function to update extensions progress bar."""
-        #     running_exts_cnt = len(running_exts)
-        #     if running_exts_cnt > 1:
-        #         progress_info = "Installing %d extensions" % running_exts_cnt
-        #     elif running_exts_cnt == 1:
-        #         progress_info = "Installing extension "
-        #     else:
-        #         progress_info = "Not installing extensions (yet)"
-
-        #     if running_exts_cnt:
-        #         progress_info += " (%d/%d done): " % (len(installed_ext_names), exts_cnt)
-        #         progress_info += ', '.join(e.name for e in running_exts)
-
-        #     self.update_exts_progress_bar(progress_info, progress_size=progress_size)
-
-        print_msg("Installing extensions in parallel...")
-        
-        # get the Easyconfig
-        ec = self.cfg
-
-        print_msg("Easyconfig: %s" % ec['spec'], log=_log)
-        
-        # get the extension list
-        print_msg("Getting extension list: ", newline=False, log=_log)
-        exts_list = get_exts_list(ec)
-        print_msg(f"{len(exts_list)} extensions found.", prefix=False, log=_log)
-
-        # get the extension's list class
-        print_msg("Getting extension's class: ", newline=False, log=_log)
-        exts_defaultclass = get_exts_list_class(ec)
-        print_msg(f"{exts_defaultclass}", prefix=False, log=_log)
-
-        if exts_defaultclass != "RPackage":
-            raise EasyBuildError("exts_defaultclass %s not supported yet" % exts_defaultclass)
-
-        # get the Bioconductor version
-        print_msg("Getting Bioconductor version: ", newline=False, log=_log)
-        bioconductor_version = get_bioconductor_version(ec)
-        print_msg(f"{'local_biocver not set. Bioconductor packages will not be considered' if not bioconductor_version else bioconductor_version}", prefix=False, log=_log)
-
-        # get the extensions installed by dependencies
-        print_msg("Getting extensions installed by dependencies or build dependencies...", log=_log)
-        installed_exts = get_installed_exts(ec)
-        print_msg(f"\tInstalled extensions found: {len(installed_exts)}", prefix=False, log=_log)
-
-        # build the exclude list
-        exclude_list = EXCLUDE_R_LIST + [ext[0] for ext in installed_exts]
-
-        # get the dependency graph of the extensions
-        dep_graph = get_R_dependency_graph(exts_list, bioconductor_version, exclude_list)
-
-        # install the extensions in parallel
-        install_dep_graph_parallel(graph=dep_graph, max_workers=self.cfg['parallel'])
 
     #
     # MISCELLANEOUS UTILITY FUNCTIONS
