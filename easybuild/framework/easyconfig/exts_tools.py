@@ -525,10 +525,9 @@ def _get_R_extension_dependencies(ext, bioconductor_version=None, exclude_list=[
                 if excluded_name.lower() == dep_name.lower():
                     ec_path = excluded_options.get('easyconfig_path', None)
                     if ec_path:
-                        print_msg(f"\t{dep_name:<{PKG_NAME_OFFSET}} is already installed by '{ec_path}'",
-                                  prefix=False, log=_log)
+                        print_msg(f"{' ' * 4 * depth}{dep_name:<{PKG_NAME_OFFSET}} is already installed by '{ec_path}'", prefix=False, log=_log)
                     else:
-                        print_msg(f"\t{dep_name:<{PKG_NAME_OFFSET}} is in the blacklist", prefix=False, log=_log)
+                        print_msg(f"{' ' * 4 * depth}{dep_name:<{PKG_NAME_OFFSET}} is in the blacklist", prefix=False, log=_log)
 
                     is_excluded = True
                     break
@@ -544,6 +543,7 @@ def _get_R_extension_dependencies(ext, bioconductor_version=None, exclude_list=[
             for proc_ext in processed_exts:
                 if proc_ext.lower() == dep_name.lower():
                     is_processed = True
+                    print_msg(f"{' ' * 4 * depth}{dep_name:<{PKG_NAME_OFFSET}} is already processed", prefix=False, log=_log)
                     break
 
             if is_processed:
@@ -552,7 +552,7 @@ def _get_R_extension_dependencies(ext, bioconductor_version=None, exclude_list=[
             # append the extension to the list of processed extensions
             processed_exts.append(dep_name)
 
-            print_msg(f"{'├──' * (depth-1)}└──{dep_name}", prefix=False, log=_log)
+            print_msg(f"{' ' * 4 * depth}{dep_name:<{PKG_NAME_OFFSET}} added as dependency", prefix=False, log=_log)
 
             # build the metadata dependency as extension getting the last version
             dep = {'name': dep_name, 'version': None, 'options': {}}
@@ -677,7 +677,7 @@ def get_R_dependency_graph(exts_list, bioconductor_version=None, exclude_list=[]
         print_msg("%s" % ext_name, prefix=False, log=_log)
 
         # get dependencies of the extension
-        dependencies = _get_R_extension_dependencies(ext, bioconductor_version, exclude_list)
+        dependencies = _get_R_extension_dependencies(ext, bioconductor_version, exclude_list, processed_exts=nodes)
 
         # append the extension to the list of nodes
         nodes.append(ext_name)
