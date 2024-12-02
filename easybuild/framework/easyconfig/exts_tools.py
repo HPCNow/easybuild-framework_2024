@@ -1296,31 +1296,6 @@ def complete_exts_list(ecs):
         # success message
         print_msg('EASYCONFIG SUCCESSFULLY COMPLETED!\n', prefix=False, log=_log)
 
-def parallel_exts_list(ecs):
-    """
-    Test on parallel installation of extensions
-
-    :param ecs: list of EasyConfig instances to complete dependencies for
-    """
-
-    for ec in ecs:
-
-        # get the EasyBlock instance
-        print_msg("Getting easyblock instance...", log=_log)
-        app: easyblock.EasyBlock = easyblock.get_easyblock_instance(ec)
-
-        # initialize extension instances
-        print_msg("Initializing extension list...", log=_log)
-        app.init_ext_instances()
-        
-        # update the extensions in the exts_list to their latest version
-        print_msg("Updating extension list...", log=_log)
-        app.install_extensions_parallel_using_exts_tools()
-
-        # success message
-        print_msg('PARALLEL SUCCESS!\n', prefix=False, log=_log)
-
-
 
 def get_dependency_dict(ec):
     """
@@ -1381,3 +1356,28 @@ def get_dependency_dict(ec):
     dependency_dict = {node: list(deps) for node, deps in dependency_dict.items()}
 
     return dependency_dict
+
+
+def parallel_exts_list(ecs):
+    """
+    Helper function to test on parallel installation of extensions
+
+    :param ecs: list of EasyConfig instances to complete dependencies for
+    """
+
+    for ec in ecs:
+
+        # get the EasyBlock instance
+        print_msg("Getting easyblock instance...", log=_log)
+        app: easyblock.EasyBlock = easyblock.get_easyblock_instance(ec)
+
+        # initialize extension instances
+        print_msg("Initializing extension list...", log=_log)
+        app.init_ext_instances()
+        
+        # update the extensions in the exts_list to their latest version
+        print_msg("Updating extension list...", log=_log)
+        app.install_extensions_parallel_using_exts_tools()
+
+        # success message
+        print_msg('PARALLEL SUCCESS!\n', prefix=False, log=_log)

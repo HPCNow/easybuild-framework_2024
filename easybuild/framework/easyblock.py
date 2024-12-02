@@ -287,6 +287,26 @@ class EasyBlock(object):
 
         self.log.info("Init completed for application name %s version %s" % (self.name, self.version))
 
+    def __getstate__(self):
+        """
+        Return the state of the object for pickling.
+        """
+        state = self.__dict__.copy()
+        # Remove or modify any non-picklable attributes here
+        state['log'] = None
+        state['progress_bar'] = None
+        state['module_generator'] = None
+        state['initial_environ'] = None
+        return state
+
+    def __setstate__(self, state):
+        """
+        Restore the state of the object from pickling.
+        """
+        self.__dict__.update(state)
+        # Reinitialize non-picklable attributes if necessary
+        self._init_log()
+
     def post_init(self):
         """
         Run post-initialization tasks.
@@ -1891,8 +1911,6 @@ class EasyBlock(object):
 
         :return: extension instance
         """
-        print("Starting extension %s" % ext)
-        return ext
         self.log.info("Starting extension %s", ext.name)
 
         run_hook(SINGLE_EXTENSION, self.hooks, pre_step_hook=True, args=[ext])
@@ -2118,7 +2136,6 @@ class EasyBlock(object):
                     running_ext_names = ', '.join(x.name for x in running_exts[:3]) + ", ..."
                 print_msg(msg % (installed_cnt, exts_cnt, queued_cnt, running_cnt, running_ext_names), log=self.log)
 
-
     def install_extensions_parallel_using_exts_tools(self, install=True):
         """
         Install extensions in parallel using the exts_tools module.
@@ -2135,9 +2152,7 @@ class EasyBlock(object):
         dep_dict = exts_tools.get_dependency_dict(ec)
 
         # set the number of workers
-        max_workers = self.cfg['parallel']
-        if not max_workers:
-            max_workers = min(16, os.cpu_count())  # TODO: use the parallel flag of eb command
+        max_workers = self.cfg['parallel'] or min(16, os.cpu_count())
 
         # init variables for parallel processing
         extension_list = list(dep_dict.keys())
@@ -2146,12 +2161,14 @@ class EasyBlock(object):
         installed = set()
         futures = []
 
+        # silence extension installation messages during parallel processing
+        silent = self.silent
+        self.silent = True
+
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
 
             # keep processing while there are extensions to be installed or futures being processed
             while extension_list or futures:
-
-                print(f"\tSorted_exts_list: {len(extension_list)} \tFutures: {len(futures)}")
 
                 for ext_name in extension_list[:]:
                     if all(dep in installed for dep in dep_dict[ext_name]):
@@ -2163,18 +2180,29 @@ class EasyBlock(object):
                                 f"Extension instance for '{ext_name}' not found. Consider using '--complete-exts_list' for a complete extension list.")
 
                         # install the extension in parallel
-                        futures.append(executor.submit(install_extension_2, ext_instance.name, exts_cnt, idx, install))
+                        futures.append(executor.submit(self.install_extension, ext_instance, exts_cnt, idx, install))
                         idx += 1
+
+                        # remove the extension from the list of extensions to be installed
                         extension_list.remove(ext_name)
 
                 for future in as_completed(futures):
+                    # get the installed extension instance
                     ext_installed = future.result()
-                    installed.add(ext_installed)
-                    print(f"Successfully installed {ext_name}")
+
+                    # add the installed extension to the set of installed extensions
+                    installed.add(ext_installed.name)
+
+                    print_msg(f"Successfully installed {ext_installed.name}", log=self.log)
+                    
+                    # remove the future from the list of futures
                     futures.remove(future)
 
+        # restore the original value of self.silent
+        self.silent = silent
+
         print_msg("Finished installing extensions in parallel.")
-        
+
     #
     # MISCELLANEOUS UTILITY FUNCTIONS
     #
@@ -4926,7 +4954,3 @@ def inject_checksums(ecs, checksum_type):
             ectxt = regex.sub('\n'.join(exts_list_lines), ectxt)
 
         write_file(ec['spec'], ectxt)
-
-
-def install_extension_2(self, ext, exts_cnt, idx, install=True):
-    return ext
