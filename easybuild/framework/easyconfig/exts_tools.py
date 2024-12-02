@@ -32,6 +32,7 @@ Authors:
 * Danilo Gonzalez (Do IT Now)
 """
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import deque
 import hashlib
 import re
@@ -78,15 +79,15 @@ _log = fancylogger.getLogger('easyblock')
 def _create_graph(edges, nodes):
     """
     Create a graph from the given edges and nodes.
-    
+
     :param edges: list of edges
     :param nodes: list of nodes
-    
+
     :return: graph
     """
     # initialize graph
     graph = {"nodes": set(), "edges": {}}
-    
+
     # Add dependencies (edges) to the graph
     for from_node, to_node in edges:
         if from_node not in graph["nodes"]:
@@ -96,7 +97,7 @@ def _create_graph(edges, nodes):
             graph["nodes"].add(to_node)
             graph["edges"][to_node] = []
         graph["edges"][from_node].append(to_node)
-    
+
     # Add standalone nodes
     if nodes:
         for node in nodes:
@@ -110,9 +111,9 @@ def _create_graph(edges, nodes):
 def topological_sort(graph):
     """
     Perform a topological sort of the given graph.
-    
+
     :param graph: graph to sort
-    
+
     :return: sorted list of the graph
     """
 
@@ -515,7 +516,7 @@ def _get_R_extension_dependencies(ext, bioconductor_version=None, exclude_list=[
     # if the extension is a string, then skip further processing
     if isinstance(ext, str):
         return []
-    
+
     # init variables
     dependencies = []
 
@@ -546,7 +547,14 @@ def _get_R_extension_dependencies(ext, bioconductor_version=None, exclude_list=[
             # if the dependency is in the exclude list, then skip
             is_excluded = False
             for excluded_ext in exclude_list:
-                if excluded_ext.lower() == dep_name.lower():
+                excluded_name, _ , excluded_options = _get_extension_values(excluded_ext)
+                if excluded_name.lower() == dep_name.lower():
+                    ec_path = excluded_options.get('easyconfig_path', None)
+                    if ec_path:
+                        print_msg(f"\t{dep_name:<{PKG_NAME_OFFSET}} is already installed by '{ec_path}'", prefix=False, log=_log)
+                    else:
+                        print_msg(f"\t{dep_name:<{PKG_NAME_OFFSET}} is in the blacklist", prefix=False, log=_log)
+
                     is_excluded = True
                     break
 
@@ -735,7 +743,7 @@ def _get_completed_exts_list(exts_list, exts_defaultclass, installed_exts, bioco
 
     if exts_defaultclass == "RPackage":
         # build the exclude list
-        exclude_list = EXCLUDE_R_LIST + [ext[0] for ext in installed_exts]
+        exclude_list = installed_exts + [(ex, '', {}) for ex in EXCLUDE_R_LIST]
 
         # get the dependency graph of the extensions
         dep_graph = get_R_dependency_graph(exts_list, bioconductor_version, exclude_list)
@@ -1053,81 +1061,128 @@ def _crosscheck_exts_list(exts_list, installed_exts):
         print_msg("No pre-installed extensions found in the exts_list!\n", log=_log)
 
 
-def get_installed_exts(ec, ec_dep=None, processed_deps=[]):
+def _get_deps_and_exts(ec_name):
     """
-    Generate a list of extensions that will be pre-installed due to dependencies or build_dependencies specified in the easyconfig parameters.
+    Get the dependencies, build dependencies and extensions of the given EasyConfig name.
 
-    :param ec: original EasyConfig instance to retrieve extensions from
-    :param ec_dep: dependency EasyConfig instance to retrieve extensions from
-    :param processed_deps: list of processed dependencies
+    :param ec_name: name of the EasyConfig instance to get dependencies and extensions from
+
+    :return: list of EasyConfig dependencies and list of extensions
+    """
+
+    # init variables
+    deps = []
+    exts = []
+
+    # search for the corresponding EasyConfig file
+    easyconfigs = search_easyconfigs(ec_name, print_result=False)
+
+    # if easyconfig files were found, then process them
+    if not easyconfigs:
+        print_warning("No EasyConfig file found for dependency %s", ec_name)
+        return (ec_name, deps, exts)
+
+    # print warning if more than one EasyConfig file was found
+    if len(easyconfigs) > 1:
+        print_warning("More than one EasyConfig file found for dependency %s: %s", ec_name, easyconfigs)
+
+    # process the EasyConfig file
+    ec = process_easyconfig(easyconfigs[0], validate=False)[0]
+
+    # get the dependencies of the given EasyConfig
+    ec_deps = _get_dependencies(ec)
+
+    # process the dependencies of the EasyConfig to get only the name of the dependency
+    for dep in ec_deps:
+
+        # get dependency's name
+        dep_name = dep['full_mod_name'].replace('/', '-') + ".eb"
+
+        # If dependency is a system dependency, store it as an extension being installed and skip futher processing
+        if dep['system']:
+            exts.append((dep['name'], dep['version'], {'easyconfig_path': ec['spec']}))
+            continue
+
+        # add the dependency to the list of dependencies
+        deps.append(dep_name)
+
+    # get the extensions of the EasyConfig
+    exts_list = get_exts_list(ec)
+    for ext in exts_list:
+        ext_name, ext_version, ext_options = _get_extension_values(ext)
+        ext_options['easyconfig_path'] = ec['spec']
+        exts.append((ext_name, ext_version, ext_options))
+
+    return (ec_name, deps, exts)
+
+
+def _get_installed_exts(ec):
+    """
+    Get the list of extensions that will be installed due to dependencies or build_dependencies of the given EasyConfig. It will also process the dependencies of the dependencies.
+
+    :param ec: EasyConfig instance to retrieve extensions from
+
+    :return: list of extensions installed by the given EasyConfig
     """
 
     if not ec:
         raise EasyBuildError("No EasyConfig instance provided to retrieve extensions from")
 
-    print_msg(f"\r\tDependencies processed: {len(processed_deps)}", newline=False, prefix=False, log=_log)
-
-    # init variable to store the installed extensions
-    installed_exts = []
-
-    # if ec_dep is provided, then get the dependencies of the dependency
-    # else get dependencies of the original EasyConfig
-    if ec_dep:
-        dependencies = _get_dependencies(ec_dep)
-    else:
-        dependencies = _get_dependencies(ec)
-
     # set terse mode to True to avoid printing unnecessary information
     terse = build_option('terse')
     update_build_option('terse', True)
 
-    # get the extensions of the dependencies of the current EasyConfig
-    for dep in dependencies:
+    # init variables
+    processed_deps = set()
+    dependencies = []
+    installed_exts = []
+    futures = []
 
-        # get dependency's name
+    # get the dependencies of the original EasyConfig
+    deps = _get_dependencies(ec)
+    for dep in deps:
         dep_name = dep['full_mod_name'].replace('/', '-') + ".eb"
+        dependencies.append(dep_name)
 
-        # check if dependency was already processed. If so, skip it
-        if dep_name in processed_deps:
-            continue
+    # process the dependency tree of the EasyConfig in parallel
+    with ProcessPoolExecutor() as executor:
 
-        # add dependency to the list of processed dependencies
-        processed_deps.append(dep_name)
+        # keep processing while there are dependencies to be processed or futures being processed
+        while dependencies or futures:
 
-        # If dependency is a system dependency, store it as an extension being installed and skip futher processing
-        if dep['system']:
-            installed_exts.extend([{'name': dep['name'], 'version': dep['version']}])
-            continue
+            # process the dependencies pending to be processed
+            for dep_name in dependencies:
 
-        # search for the corresponding EasyConfig file
-        easyconfigs = search_easyconfigs(dep_name, print_result=False)
+                # process the dependency if it has not been processed yet
+                if dep_name not in processed_deps:
 
-        # if easyconfig files were found, then process them
-        if easyconfigs:
+                    # add the EasyConfig to the list of processed dependencies
+                    processed_deps.add(dep_name)
 
-            # print warning if more than one EasyConfig file was found
-            if len(easyconfigs) > 1:
-                print_warning("More than one EasyConfig file found for dependency %s: %s", dep_name, easyconfigs)
+                    print_msg(f"\r\tDependencies processed: {len(processed_deps)}",
+                              newline=False, prefix=False, log=_log)
 
-            # process only the first EasyConfig file found
-            easyconfig_dep = process_easyconfig(easyconfigs[0], validate=False)[0]
+                    # submit the EasyConfig dependency instance to the executor
+                    futures.append(executor.submit(_get_deps_and_exts, dep_name))
 
-            # Search recursively for pre-installed extensions of dependencies of the current EasyConfig
-            installed = get_installed_exts(ec, easyconfig_dep, processed_deps)
+                # remove the dependency from the list
+                dependencies.remove(dep_name)
 
-            # store the extensions of the dependencies of the current EasyConfig
-            for ext in installed:
-                ext_name, ext_version, ext_options = _get_extension_values(ext)
-                ext_options['easyconfig_path'] = easyconfig_dep['spec']
-                installed_exts.append((ext_name, ext_version, ext_options))
+            # completed dependencies processing
+            for future in as_completed(futures):
+                # get the result of the future
+                _, deps, exts = future.result()
 
-    # get and store the extensions of the current EasyConfig only if it is a dependency
-    # avoid storing extensions of the original EasyConfig
-    if ec_dep:
-        for ext in get_exts_list(ec_dep):
-            ext_name, ext_version, ext_options = _get_extension_values(ext)
-            ext_options['easyconfig_path'] = ec_dep['spec']
-            installed_exts.append((ext_name, ext_version, ext_options))
+                # store the Easyconfig dependencies
+                for dep in deps:
+                    if dep not in processed_deps:
+                        dependencies.append(dep)
+
+                # store the extensions installed by the dependencies
+                installed_exts.extend(exts)
+
+                # remove the future from the list
+                futures.remove(future)
 
     # restore the original value of the terse option
     update_build_option('terse', terse)
