@@ -35,11 +35,12 @@ Authors:
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import deque
 import hashlib
+import os
 import re
 import requests
+import easybuild.framework.easyblock as easyblock
 
 from easybuild.base import fancylogger
-from easybuild.framework.easyblock import EasyBlock, get_easyblock_instance
 from easybuild.framework.easyconfig.easyconfig import process_easyconfig
 from easybuild.tools.build_log import EasyBuildError
 from easybuild.tools.build_log import print_error, print_msg, print_warning
@@ -146,33 +147,6 @@ def topological_sort(graph):
         raise ValueError("Graph has at least one cycle, topological sort not possible")
 
 
-def get_dependency_dict(graph):
-    """
-    Get a dictionary with the dependencies of the given graph.
-
-    :param graph: graph to build the dictionary from
-
-    :return: dictionary with the dependencies of the given graph
-    """
-
-    if not graph:
-        raise ValueError("No graph provided to build the dependency dictionary")
-    
-    # get the edges and nodes of the graph
-    edges, nodes = graph["edges"], graph["nodes"]
-
-    # initialize the dictionary
-    dependency_dict = {node: set() for node in nodes}
-    
-    # Add dependencies to the dictionary
-    for from_node, to_nodes in edges.items():
-        for to_node in to_nodes:
-            dependency_dict[to_node].add(from_node)
-    
-    # Convert sets to lists
-    dependency_dict = {node: list(deps) for node, deps in dependency_dict.items()}
-    
-    return dependency_dict
 
 
 def _get_R_pkg_checksum(pkg_metadata, bioconductor_version=None):
@@ -547,11 +521,12 @@ def _get_R_extension_dependencies(ext, bioconductor_version=None, exclude_list=[
             # if the dependency is in the exclude list, then skip
             is_excluded = False
             for excluded_ext in exclude_list:
-                excluded_name, _ , excluded_options = _get_extension_values(excluded_ext)
+                excluded_name, _, excluded_options = _get_extension_values(excluded_ext)
                 if excluded_name.lower() == dep_name.lower():
                     ec_path = excluded_options.get('easyconfig_path', None)
                     if ec_path:
-                        print_msg(f"\t{dep_name:<{PKG_NAME_OFFSET}} is already installed by '{ec_path}'", prefix=False, log=_log)
+                        print_msg(f"\t{dep_name:<{PKG_NAME_OFFSET}} is already installed by '{ec_path}'",
+                                  prefix=False, log=_log)
                     else:
                         print_msg(f"\t{dep_name:<{PKG_NAME_OFFSET}} is in the blacklist", prefix=False, log=_log)
 
@@ -909,7 +884,7 @@ def _get_dependencies(ec):
     if not ec:
         raise EasyBuildError("No EasyConfig instance provided to get dependencies from")
 
-    app: EasyBlock = get_easyblock_instance(ec)
+    app: easyblock.EasyBlock = easyblock.get_easyblock_instance(ec)
     return app.cfg.dependencies()
 
 
@@ -1116,7 +1091,7 @@ def _get_deps_and_exts(ec_name):
     return (ec_name, deps, exts)
 
 
-def _get_installed_exts(ec):
+def get_installed_exts(ec):
     """
     Get the list of extensions that will be installed due to dependencies or build_dependencies of the given EasyConfig. It will also process the dependencies of the dependencies.
 
@@ -1151,7 +1126,7 @@ def _get_installed_exts(ec):
         while dependencies or futures:
 
             # process the dependencies pending to be processed
-            for dep_name in dependencies:
+            for dep_name in dependencies[:]:
 
                 # process the dependency if it has not been processed yet
                 if dep_name not in processed_deps:
@@ -1321,50 +1296,6 @@ def complete_exts_list(ecs):
         # success message
         print_msg('EASYCONFIG SUCCESSFULLY COMPLETED!\n', prefix=False, log=_log)
 
-
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-def install_extension(extension):
-    """
-    Install a single extension using EasyBuild.
-    
-    :param extension: The name of the extension to install
-    """
-    # try:
-    #     result = subprocess.run(['eb', extension, '--install'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    #     return (extension, result.stdout.decode('utf-8'))
-    # except subprocess.CalledProcessError as e:
-    #     return (extension, e.stderr.decode('utf-8'))
-    import time
-    time.sleep(3)
-    return (extension, "Success")
-    
-def install_extensions_in_parallel(graph, max_workers=4):
-    """
-    Install multiple extensions in parallel using multiple cores, respecting dependencies.
-    
-    :param graph: graph of dependencies 
-    :param max_workers: Maximum number of worker threads to use
-    """
-
-    dep_dict = get_dependency_dict(graph)
-    sorted_list = topological_sort(graph)
-    installed = set()
-    futures = []
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        while sorted_list or futures:
-            for extension in sorted_list:
-                if all(dep in installed for dep in dep_dict[extension]):
-                    futures.append(executor.submit(install_extension, extension))
-                    sorted_list.remove(extension)
-
-            for future in as_completed(futures):
-                extension, output = future.result()
-                installed.add(extension)
-                print(f"Successfully installed {extension}")
-                futures.remove(future)
-
 def parallel_exts_list(ecs):
     """
     Test on parallel installation of extensions
@@ -1374,54 +1305,79 @@ def parallel_exts_list(ecs):
 
     for ec in ecs:
 
-        # # welcome message
-        # print_msg("\nPARALLEL EASYCONFIG EXTENSIONS", prefix=False, log=_log)
+        # get the EasyBlock instance
+        print_msg("Getting easyblock instance...", log=_log)
+        app: easyblock.EasyBlock = easyblock.get_easyblock_instance(ec)
 
-        # print_msg("Easyconfig: %s" % ec['spec'], log=_log)
-
-        # # get the extension list
-        # print_msg("Getting extension list: ", newline=False, log=_log)
-        # exts_list = _get_exts_list(ec)
-        # print_msg(f"{len(exts_list)} extensions found.", prefix=False, log=_log)
-
-        # # get the extension's list class
-        # print_msg("Getting extension's class: ", newline=False, log=_log)
-        # exts_defaultclass = _get_exts_list_class(ec)
-        # print_msg(f"{exts_defaultclass}", prefix=False, log=_log)
-
-        # # get the Bioconductor version
-        # print_msg("Getting Bioconductor version: ", newline=False, log=_log)
-        # bioconductor_version = _get_bioconductor_version(ec)
-        # print_msg(f"{'local_biocver not set. Bioconductor packages will not be considered' if not bioconductor_version else bioconductor_version}", prefix=False, log=_log)
-
-        # # get the extensions installed by dependencies
-        # print_msg("Getting extensions installed by dependencies or build dependencies...", log=_log)
-        # installed_exts = _get_installed_exts(ec)
-        # print_msg(f"\tInstalled extensions found: {len(installed_exts)}", prefix=False, log=_log)
-
-        # if exts_defaultclass != "RPackage":
-        #     raise EasyBuildError("exts_defaultclass %s not supported yet" % exts_defaultclass)
-
-        # # build the exclude list
-        # exclude_list = EXCLUDE_R_LIST + [ext[0] for ext in installed_exts]
-
-        # # get the dependency graph of the extensions
-        # dep_graph = _get_R_dependency_graph(exts_list, bioconductor_version, exclude_list)
-
-        # print(dep_graph)
-
-        dep_graph = {'nodes': {'insight', 'datawizard', 'sjlabelled', 'BgeeCall', 'rslurm', 'sjmisc'}, 'edges': {'insight': ['datawizard', 'sjlabelled', 'datawizard', 'sjmisc', 'sjlabelled', 'sjmisc'], 'datawizard': ['sjlabelled', 'sjmisc', 'sjlabelled', 'sjmisc'], 'sjlabelled': ['sjmisc', 'sjmisc'], 'sjmisc': ['BgeeCall'], 'BgeeCall': [], 'rslurm': ['BgeeCall']}}
-
-        install_extensions_in_parallel(graph=dep_graph)
-
-        print(dep_graph)
-
-        # get a dictionary of dependencies
-        dep_dict = get_dependency_dict(dep_graph)
-
-        dep_dict = {'BgeeCall': ['sjmisc', 'rslurm'], 'sjmisc': ['datawizard', 'sjlabelled', 'insight'], 'datawizard': ['insight'], 'rslurm': [], 'sjlabelled': ['datawizard', 'insight'], 'insight': []}
-
-        print(dep_dict)
+        # initialize extension instances
+        print_msg("Initializing extension list...", log=_log)
+        app.init_ext_instances()
+        
+        # update the extensions in the exts_list to their latest version
+        print_msg("Updating extension list...", log=_log)
+        app.install_extensions_parallel_using_exts_tools()
 
         # success message
         print_msg('PARALLEL SUCCESS!\n', prefix=False, log=_log)
+
+
+
+def get_dependency_dict(ec):
+    """
+    Get a dictionary with the dependencies of the given easyconfig
+
+    :param ec: EasyConfig instance to get the dependencies from
+
+    :return: dictionary with the dependencies of the given graph
+    """
+
+    if not ec:
+        raise EasyBuildError("No EasyConfig instance provided to retrieve dictionary of dependencies from")
+    
+    print_msg("Easyconfig: %s" % ec['spec'], log=_log)
+
+    # get the extension list
+    print_msg("Getting extension list: ", newline=False, log=_log)
+    exts_list = get_exts_list(ec)
+    print_msg(f"{len(exts_list)} extensions found.", prefix=False, log=_log)
+
+    # get the extension's list class
+    print_msg("Getting extension's class: ", newline=False, log=_log)
+    exts_defaultclass = get_exts_list_class(ec)
+    print_msg(f"{exts_defaultclass}", prefix=False, log=_log)
+
+    if exts_defaultclass != "RPackage":
+        raise EasyBuildError("exts_defaultclass %s not supported for parallel installation yet" % exts_defaultclass)
+
+    # get the Bioconductor version
+    print_msg("Getting Bioconductor version: ", newline=False, log=_log)
+    bioconductor_version = get_bioconductor_version(ec)
+    print_msg(f"{'local_biocver not set. Bioconductor packages will not be considered' if not bioconductor_version else bioconductor_version}", prefix=False, log=_log)
+
+    # get the extensions installed by dependencies
+    print_msg("Getting extensions installed by dependencies or build dependencies...", log=_log)
+    installed_exts = get_installed_exts(ec)
+    print_msg(f"\tInstalled extensions found: {len(installed_exts)}", prefix=False, log=_log)
+
+    # build the exclude list
+    exclude_list = installed_exts + [(ex, '', {}) for ex in EXCLUDE_R_LIST]
+
+    # get the dependency graph of the extensions
+    print_msg("Getting the dependency graph of the extensions...", log=_log)
+    dep_graph = get_R_dependency_graph(exts_list, bioconductor_version, exclude_list)
+
+    # get the edges and nodes of the graph
+    edges, nodes = dep_graph["edges"], dep_graph["nodes"]
+
+    # initialize the dictionary
+    dependency_dict = {node: set() for node in nodes}
+
+    # Add dependencies to the dictionary
+    for from_node, to_nodes in edges.items():
+        for to_node in to_nodes:
+            dependency_dict[to_node].add(from_node)
+
+    # Convert sets to lists
+    dependency_dict = {node: list(deps) for node, deps in dependency_dict.items()}
+
+    return dependency_dict

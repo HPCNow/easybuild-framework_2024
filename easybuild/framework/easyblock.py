@@ -53,13 +53,14 @@ import tempfile
 import time
 import traceback
 from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import easybuild.tools.environment as env
 import easybuild.tools.toolchain as toolchain
+import easybuild.framework.easyconfig.exts_tools as exts_tools
 from easybuild.base import fancylogger
 from easybuild.framework.easyconfig import EASYCONFIGS_PKG_SUBDIR
-from easybuild.framework.easyconfig.easyconfig import ITERATE_OPTIONS, EasyConfig, ActiveMNS, get_easyblock_class
+from easybuild.framework.easyconfig.easyconfig import ITERATE_OPTIONS, EasyConfig, ActiveMNS, get_easyblock_class, process_easyconfig
 from easybuild.framework.easyconfig.easyconfig import get_module_path, letter_dir_for, resolve_template
 from easybuild.framework.easyconfig.format.format import SANITY_CHECK_PATHS_DIRS, SANITY_CHECK_PATHS_FILES
 from easybuild.framework.easyconfig.parser import fetch_parameters_from_easyconfig
@@ -1890,7 +1891,8 @@ class EasyBlock(object):
 
         :return: extension instance
         """
-
+        print("Starting extension %s" % ext)
+        return ext
         self.log.info("Starting extension %s", ext.name)
 
         run_hook(SINGLE_EXTENSION, self.hooks, pre_step_hook=True, args=[ext])
@@ -2116,6 +2118,63 @@ class EasyBlock(object):
                     running_ext_names = ', '.join(x.name for x in running_exts[:3]) + ", ..."
                 print_msg(msg % (installed_cnt, exts_cnt, queued_cnt, running_cnt, running_ext_names), log=self.log)
 
+
+    def install_extensions_parallel_using_exts_tools(self, install=True):
+        """
+        Install extensions in parallel using the exts_tools module.
+
+        :param install: actually install extensions, don't just prepare environment for installing
+        """
+
+        print_msg("Installing extensions in parallel...")
+
+        # TODO: workaround until exts_tools is integrated inside easyblock
+        ec = process_easyconfig(self.cfg.path, validate=False)[0]
+
+        # get the dictionary of dependencies
+        dep_dict = exts_tools.get_dependency_dict(ec)
+
+        # set the number of workers
+        max_workers = self.cfg['parallel']
+        if not max_workers:
+            max_workers = min(16, os.cpu_count())  # TODO: use the parallel flag of eb command
+
+        # init variables for parallel processing
+        extension_list = list(dep_dict.keys())
+        exts_cnt = len(extension_list)
+        idx = 1
+        installed = set()
+        futures = []
+
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+
+            # keep processing while there are extensions to be installed or futures being processed
+            while extension_list or futures:
+
+                print(f"\tSorted_exts_list: {len(extension_list)} \tFutures: {len(futures)}")
+
+                for ext_name in extension_list[:]:
+                    if all(dep in installed for dep in dep_dict[ext_name]):
+                        # get the extension instance
+                        try:
+                            ext_instance = next(ext_inst for ext_inst in self.ext_instances if ext_inst.name == ext_name)
+                        except StopIteration:
+                            raise EasyBuildError(
+                                f"Extension instance for '{ext_name}' not found. Consider using '--complete-exts_list' for a complete extension list.")
+
+                        # install the extension in parallel
+                        futures.append(executor.submit(install_extension_2, ext_instance.name, exts_cnt, idx, install))
+                        idx += 1
+                        extension_list.remove(ext_name)
+
+                for future in as_completed(futures):
+                    ext_installed = future.result()
+                    installed.add(ext_installed)
+                    print(f"Successfully installed {ext_name}")
+                    futures.remove(future)
+
+        print_msg("Finished installing extensions in parallel.")
+        
     #
     # MISCELLANEOUS UTILITY FUNCTIONS
     #
@@ -4867,3 +4926,7 @@ def inject_checksums(ecs, checksum_type):
             ectxt = regex.sub('\n'.join(exts_list_lines), ectxt)
 
         write_file(ec['spec'], ectxt)
+
+
+def install_extension_2(self, ext, exts_cnt, idx, install=True):
+    return ext
