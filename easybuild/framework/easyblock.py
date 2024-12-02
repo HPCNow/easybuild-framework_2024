@@ -61,7 +61,6 @@ from easybuild.base import fancylogger
 from easybuild.framework.easyconfig import EASYCONFIGS_PKG_SUBDIR
 from easybuild.framework.easyconfig.easyconfig import ITERATE_OPTIONS, EasyConfig, ActiveMNS, get_easyblock_class
 from easybuild.framework.easyconfig.easyconfig import get_module_path, letter_dir_for, resolve_template
-from easybuild.framework.easyconfig.exts_tools import get_dependency_dict, topological_sort, get_exts_list, get_exts_list_class, get_bioconductor_version, get_installed_exts, get_R_dependency_graph, EXCLUDE_R_LIST
 from easybuild.framework.easyconfig.format.format import SANITY_CHECK_PATHS_DIRS, SANITY_CHECK_PATHS_FILES
 from easybuild.framework.easyconfig.parser import fetch_parameters_from_easyconfig
 from easybuild.framework.easyconfig.style import MAX_LINE_LENGTH
