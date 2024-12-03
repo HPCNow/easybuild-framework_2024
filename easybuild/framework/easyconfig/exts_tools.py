@@ -35,6 +35,7 @@ Authors:
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from collections import deque
 import hashlib
+import os
 import re
 import requests
 
@@ -591,13 +592,45 @@ def _print_extension(extension):
         f"\t{name:<{PKG_NAME_OFFSET}} v{version:<{PKG_VERSION_OFFSET}} checksum: {checksum:<{CHECKSUM_OFFSET}}", prefix=False, log=_log)
 
 
+def _fulfill_parallel(pkg_class, ext, bioconductor_version=None):
+    """
+    Get name, version, and checksums from the database of the given extension.
+    
+    :param pkg_class: package class (RPackage, PythonPackage)
+    :param ext: extension to fulfill
+    :param bioconductor_version: bioconductor version to use (if any)
+
+    :return: extension fulfilled with the database values
+    """
+
+    if not pkg_class:
+        raise EasyBuildError("No package class provided to fulfill the extension")
+    
+    if not ext:
+        raise EasyBuildError("No extension provided to fulfill")
+
+    # get the values of the extension
+    ext_name, ext_version, _ = _get_extension_values(ext)
+
+    # get metadata of the extension
+    metadata = _get_pkg_metadata(pkg_class=pkg_class,
+                                 pkg_name=ext_name,
+                                 pkg_version=ext_version,
+                                 bioc_version=bioconductor_version)
+
+    # process the metadata and format it as an extension
+    if metadata:
+        ext = _format_metadata_as_extension(pkg_class, metadata, bioconductor_version)
+
+    return ext
+    
 def _fulfill_exts_list(pkg_class, exts_list, exts_list_to_fulfill, bioconductor_version=None):
     """
     Fulfill the exts_list with the version and checksums of the extensions.
 
     :param pkg_class: package class (RPackage, PythonPackage)
     :param exts_list: original list of extensions
-    :param exts_list_to_fulfill: list of extensions to fulfill
+    :param exts_list_to_fulfill: list of extensions to fulfill respecting the order
     :param bioconductor_version: bioconductor version to use (if any)
 
     :return: list of extensions fulfilled
@@ -614,12 +647,13 @@ def _fulfill_exts_list(pkg_class, exts_list, exts_list_to_fulfill, bioconductor_
 
     print_msg("Fulfilling exts_list...", log=_log)
 
+    # prepare the list of extensions to be fulfilled formatting them as extensions.
+    # respect the extensions order and the original extensions names and versions
     for ext in exts_list_to_fulfill:
-
         # get the values of the extension
         ext_name, ext_version, _ = _get_extension_values(ext)
 
-        # respect the original extension name and version
+        # check if the extension is in the original list
         for orig_ext in exts_list:
             orig_ext_name, orig_ext_version, _ = _get_extension_values(orig_ext)
             if orig_ext_name.lower() == ext_name.lower():
@@ -627,17 +661,45 @@ def _fulfill_exts_list(pkg_class, exts_list, exts_list_to_fulfill, bioconductor_
                 ext_version = orig_ext_version
                 break
 
-        # get metadata of the extension
-        metadata = _get_pkg_metadata(pkg_class=pkg_class,
-                                     pkg_name=ext_name,
-                                     pkg_version=ext_version,
-                                     bioc_version=bioconductor_version)
+        # append the extension to the list of fulfilled extensions
+        fulfilled_exts_list.append({"name": ext_name, "version": ext_version,  "options": {}})
 
-        # process the metadata, format it as an extension, and store it
-        if metadata:
-            ext = _format_metadata_as_extension(pkg_class, metadata, bioconductor_version)
-            fulfilled_exts_list.append(ext)
-            _print_extension(ext)
+    # set the max number of parallel workers
+    max_workers = build_option('parallel') or min(16, os.cpu_count())
+
+    # init variables for parallel processing
+    futures = []
+    exts_processed = 0
+    exts_total = len(fulfilled_exts_list)
+
+    # fulfill the extensions in parallel
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+
+        # submit all the extensions to be fulfilled at once
+        for ext in fulfilled_exts_list:
+            futures.append(executor.submit(_fulfill_parallel, pkg_class, ext, bioconductor_version))
+
+        # wait for the futures to be completed
+        while futures:  
+            for future in as_completed(futures):
+                # get the fulfilled extension
+                ext_fulfilled = future.result()
+
+                # update the extension in the fulfilled list
+                for ext in fulfilled_exts_list:
+                    if ext['name'] == ext_fulfilled['name']:
+                        ext['version'] = ext_fulfilled['version']
+                        ext['options'] = ext_fulfilled['options']
+                        break
+
+                exts_processed += 1
+                print_msg(f"\r\tExtensions fulfilled: {exts_processed}/{exts_total}", prefix=False, newline=False, log=_log)
+
+                # remove the future from the list
+                futures.remove(future)
+
+    # aesthetic terminal print
+    print()
 
     # return the complete list of extensions
     return fulfilled_exts_list
@@ -1106,6 +1168,7 @@ def _get_installed_exts(ec):
 
     # init variables
     processed_deps = set()
+    count = 0
     dependencies = []
     installed_exts = []
     futures = []
@@ -1116,8 +1179,11 @@ def _get_installed_exts(ec):
         dep_name = dep['full_mod_name'].replace('/', '-') + ".eb"
         dependencies.append(dep_name)
 
+    # set the max number of parallel workers
+    max_workers = build_option('parallel') or min(16, os.cpu_count())
+
     # process the dependency tree of the EasyConfig in parallel
-    with ProcessPoolExecutor() as executor:
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
 
         # keep processing while there are dependencies to be processed or futures being processed
         while dependencies or futures:
@@ -1131,9 +1197,6 @@ def _get_installed_exts(ec):
                     # add the EasyConfig to the list of processed dependencies
                     processed_deps.add(dep_name)
 
-                    print_msg(f"\r\tDependencies processed: {len(processed_deps)}",
-                              newline=False, prefix=False, log=_log)
-
                     # submit the EasyConfig dependency instance to the executor
                     futures.append(executor.submit(_get_deps_and_exts, dep_name))
 
@@ -1144,6 +1207,9 @@ def _get_installed_exts(ec):
             for future in as_completed(futures):
                 # get the result of the future
                 _, deps, exts = future.result()
+
+                count += 1
+                print_msg(f"\r\tDependencies processed: {count}",newline=False, prefix=False, log=_log)
 
                 # store the Easyconfig dependencies
                 for dep in deps:
