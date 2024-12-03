@@ -425,17 +425,17 @@ def _format_metadata_as_extension(pkg_class, pkg_metadata, bioconductor_version=
 def _get_ext_from_db(pkg_class, ext, bioconductor_version=None):
     """
     Get the extension values from the database
-    
+
     :param pkg_class: package class (RPackage, PythonPackage)
     :param ext: extension to get the metadata from
     :param bioconductor_version: bioconductor version to use (if any)
-    
+
     :return: extension from the database
     """
 
     if not pkg_class:
         raise EasyBuildError("No package class provided to get the extension")
-    
+
     if not ext:
         raise EasyBuildError("No extension provided to get the extension")
 
@@ -504,14 +504,14 @@ def _get_clean_pkg_values(pkg_name=None, pkg_version=None, pkg_options=None):
     return clean_name, clean_version, clean_options
 
 
-def _get_R_extension_dependencies(ext, bioconductor_version=None, exclude_list=[], processed_exts=[], depth=1):
+def _get_R_extension_dependencies(ext, bioconductor_version=None, exclude_list=[], processed_deps=[], depth=1):
     """
     Process the dependencies of the given R extension.
 
     :param ext: the extension to get dependencies from
     :param bioconductor_version: bioconductor's version to use (if any)
     :param exclude_list: list of extensions to exclude from the dependencies
-    :param processed_exts: list of extensions already processed
+    :param processed_deps: list of extensions already processed
     :param depth: depth of the recursion
 
     :return: list of dependencies of the given R extension except the excluded ones
@@ -555,14 +555,8 @@ def _get_R_extension_dependencies(ext, bioconductor_version=None, exclude_list=[
             # if the dependency is in the exclude list, then skip
             is_excluded = False
             for excluded_ext in exclude_list:
-                excluded_name, _ , excluded_options = _get_extension_values(excluded_ext)
+                excluded_name, _, _ = _get_extension_values(excluded_ext)
                 if excluded_name.lower() == dep_name.lower():
-                    ec_path = excluded_options.get('easyconfig_path', None)
-                    if ec_path:
-                        print_msg(f"{' ' * 4 * depth}{dep_name:<{PKG_NAME_OFFSET}} is already installed by '{ec_path}'", prefix=False, log=_log)
-                    else:
-                        print_msg(f"{' ' * 4 * depth}{dep_name:<{PKG_NAME_OFFSET}} is in the blacklist", prefix=False, log=_log)
-
                     is_excluded = True
                     break
 
@@ -574,19 +568,16 @@ def _get_R_extension_dependencies(ext, bioconductor_version=None, exclude_list=[
 
             # if the dependency is already processed, then skip
             is_processed = False
-            for proc_ext in processed_exts:
-                if proc_ext.lower() == dep_name.lower():
+            for proc_dep in processed_deps:
+                if proc_dep.lower() == dep_name.lower():
                     is_processed = True
-                    print_msg(f"{' ' * 4 * depth}{dep_name:<{PKG_NAME_OFFSET}} is already processed", prefix=False, log=_log)
                     break
 
             if is_processed:
                 continue
 
             # append the extension to the list of processed extensions
-            processed_exts.append(dep_name)
-
-            print_msg(f"{' ' * 4 * depth}{dep_name:<{PKG_NAME_OFFSET}} added as dependency", prefix=False, log=_log)
+            processed_deps.append(dep_name)
 
             # build the metadata dependency as extension getting the last version
             dep = {'name': dep_name, 'version': None, 'options': {}}
@@ -595,7 +586,7 @@ def _get_R_extension_dependencies(ext, bioconductor_version=None, exclude_list=[
             deps = _get_R_extension_dependencies(dep,
                                                  bioconductor_version,
                                                  exclude_list,
-                                                 processed_exts,
+                                                 processed_deps,
                                                  depth + 1)
 
             # append the recursive found dependencies to the list
@@ -627,7 +618,7 @@ def _print_extension(extension):
     print_msg(
         f"\t{name:<{PKG_NAME_OFFSET}} v{version:<{PKG_VERSION_OFFSET}} checksum: {checksum:<{CHECKSUM_OFFSET}}", prefix=False, log=_log)
 
-    
+
 def _fulfill_exts_list(pkg_class, exts_list, exts_list_to_fulfill, bioconductor_version=None):
     """
     Fulfill the exts_list with the version and checksums of the extensions.
@@ -674,8 +665,8 @@ def _fulfill_exts_list(pkg_class, exts_list, exts_list_to_fulfill, bioconductor_
 
     # init variables for parallel processing
     futures = []
-    exts_processed = 0
-    exts_total = len(fulfilled_exts_list)
+    count = 0
+    total = len(fulfilled_exts_list)
 
     # fulfill the extensions in parallel
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -685,7 +676,7 @@ def _fulfill_exts_list(pkg_class, exts_list, exts_list_to_fulfill, bioconductor_
             futures.append(executor.submit(_get_ext_from_db, pkg_class, ext, bioconductor_version))
 
         # wait for the futures to be completed
-        while futures:  
+        while futures:
             for future in as_completed(futures):
                 # get the extension from db
                 ext_from_db = future.result()
@@ -699,8 +690,8 @@ def _fulfill_exts_list(pkg_class, exts_list, exts_list_to_fulfill, bioconductor_
                             ext['options'] = ext_from_db['options']
                             break
 
-                exts_processed += 1
-                print_msg(f"\r\tExtensions fulfilled: {exts_processed}/{exts_total}", prefix=False, newline=False, log=_log)
+                count += 1
+                print_msg(f"\r\tExtensions fulfilled: {count}/{total}", prefix=False, newline=False, log=_log)
 
                 # remove the future from the list
                 futures.remove(future)
@@ -710,6 +701,35 @@ def _fulfill_exts_list(pkg_class, exts_list, exts_list_to_fulfill, bioconductor_
 
     # return the complete list of extensions
     return fulfilled_exts_list
+
+
+def _get_R_dependency_dict(dep_graph):
+    """
+    Get the dependency dictionary from the given dependency graph.
+
+    :param dep_graph: dependency graph
+
+    :return: dependency dictionary
+    """
+
+    if not dep_graph:
+        raise EasyBuildError("No dependency graph provided to get the dependency dictionary")
+
+    # get the edges and nodes from the dependency graph
+    edges, nodes = dep_graph["edges"], dep_graph["nodes"]
+
+    # initialize the dictionary
+    dependency_dict = {node: set() for node in nodes}
+
+    # Add dependencies to the dictionary
+    for from_node, to_nodes in edges.items():
+        for to_node in to_nodes:
+            dependency_dict[to_node].add(from_node)
+
+    # Convert sets to lists
+    dependency_dict = {node: sorted(deps) for node, deps in dependency_dict.items()}
+
+    return dependency_dict
 
 
 def _get_R_dependency_graph(exts_list, bioconductor_version=None, exclude_list=[]):
@@ -728,28 +748,40 @@ def _get_R_dependency_graph(exts_list, bioconductor_version=None, exclude_list=[
         raise EasyBuildError("No exts_list provided for completing")
 
     # init variables
+    count = 0
+    total = len(exts_list)
     edges = []
     nodes = []
+    futures = []
 
-    # aesthetic terminal print
-    print()
+    # add the name of the extensions to the list of nodes
+    nodes = [ext_name for ext_name, _, _ in map(_get_extension_values, exts_list)]
 
-    # get the dependendy tree. i.e. list of dependencies for each extension
-    for ext in exts_list:
+    # set the max number of parallel workers
+    max_workers = build_option('parallel') or min(16, os.cpu_count())
 
-        # get the values of the extension
-        ext_name, _, _ = _get_extension_values(ext)
+    # update the extensions in parallel
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
 
-        print_msg("%s" % ext_name, prefix=False, log=_log)
+        # submit all the extensions to be processed at once
+        for ext in exts_list:
+            futures.append(executor.submit(_get_R_extension_dependencies, ext,
+                                           bioconductor_version, exclude_list, nodes[:]))
 
-        # get dependencies of the extension
-        dependencies = _get_R_extension_dependencies(ext, bioconductor_version, exclude_list, processed_exts=nodes)
+        # wait for all the futures to be completed
+        while futures:
+            for future in as_completed(futures):
+                # get the dependencies of the extension
+                dependencies = future.result()
 
-        # append the extension to the list of nodes
-        nodes.append(ext_name)
+                # append the dependencies to the list of edges
+                edges.extend(dependencies)
 
-        # append the dependencies to the list of edges
-        edges.extend(dependencies)
+                count += 1
+                print_msg(f"\r\tExtensions processed: {count}/{total}", prefix=False, newline=False, log=_log)
+
+                # remove the future from the list
+                futures.remove(future)
 
     graph = _create_graph(edges, nodes)
 
@@ -1031,6 +1063,9 @@ def _get_bioconductor_version(ec):
     if not ec:
         raise EasyBuildError("No EasyConfig instance provided to retrieve extensions from")
 
+    # init variables
+    bioconductor_version = None
+
     # get the Bioconductor version from the easyconfig file
     # assume that the Bioconductor version is stored in the 'local_biocver' parameter
     # as this is not a standard parameter we need to parse the raw text
@@ -1039,8 +1074,6 @@ def _get_bioconductor_version(ec):
 
     if match:
         bioconductor_version = match.group(1)
-    else:
-        bioconductor_version = None
 
     return bioconductor_version
 
@@ -1228,7 +1261,7 @@ def _get_installed_exts(ec):
                 _, deps, exts = future.result()
 
                 count += 1
-                print_msg(f"\r\tDependencies processed: {count}",newline=False, prefix=False, log=_log)
+                print_msg(f"\r\tDependencies processed: {count}", newline=False, prefix=False, log=_log)
 
                 # store the Easyconfig dependencies
                 for dep in deps:
