@@ -422,6 +422,42 @@ def _format_metadata_as_extension(pkg_class, pkg_metadata, bioconductor_version=
     return {"name": name, "version": version,  "options": {"checksums": [checksum]}}
 
 
+def _get_ext_from_db(pkg_class, ext, bioconductor_version=None):
+    """
+    Get the extension values from the database
+    
+    :param pkg_class: package class (RPackage, PythonPackage)
+    :param ext: extension to get the metadata from
+    :param bioconductor_version: bioconductor version to use (if any)
+    
+    :return: extension from the database
+    """
+
+    if not pkg_class:
+        raise EasyBuildError("No package class provided to get the extension")
+    
+    if not ext:
+        raise EasyBuildError("No extension provided to get the extension")
+
+    # init variables
+    ext_from_db = None
+
+    # get the values of the extension
+    ext_name, ext_version, _ = _get_extension_values(ext)
+
+    # get metadata of the latest version of the extension
+    metadata = _get_pkg_metadata(pkg_class=pkg_class,
+                                 pkg_name=ext_name,
+                                 pkg_version=ext_version,
+                                 bioc_version=bioconductor_version)
+
+    if metadata:
+        # process the metadata and format it as an extension
+        ext_from_db = _format_metadata_as_extension(pkg_class, metadata, bioconductor_version)
+
+    return ext_from_db
+
+
 def _get_clean_pkg_values(pkg_name=None, pkg_version=None, pkg_options=None):
     """
     Clean the given extension values
@@ -816,60 +852,72 @@ def _get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version=No
     # init variables
     updated_exts_list = []
 
-    # aesthetic terminal print
-    print()
-
-    # loop over all extensions and update their version
+    # prepare the list of updated extensions
     for ext in exts_list:
 
-        if isinstance(ext, str):
-            # if the extension is a string, then store it as is and skip further processing
-            updated_exts_list.append({"name": ext, "version": None,  "options": None})
+        # get the values of the extension
+        ext_name, ext_version, ext_options = _get_extension_values(ext)
 
-            # print message to the user
+        # store the extension in the list to be updated
+        updated_exts_list.append({"name": ext_name, "version": ext_version,  "options": ext_options})
+
+    # set the max number of parallel workers
+    max_workers = build_option('parallel') or min(16, os.cpu_count())
+
+    # init variables for parallel processing
+    count = 0
+    total = len(updated_exts_list)
+    futures = []
+
+    # update the extensions in parallel
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+
+        # submit all the extensions to be updated at once
+        for ext in updated_exts_list:
+            # skip the extension if it is a string
+            if not ext['version'] and not ext['options']:
+                continue
+
+            # make sure the version is None so we get the latest version of the package
+            ext['version'] = None
+            futures.append(executor.submit(_get_ext_from_db, exts_defaultclass, ext, bioconductor_version))
+
+        # wait for the futures to be completed
+        while futures:
+            for future in as_completed(futures):
+                # get the fulfilled extension
+                ext_from_db = future.result()
+
+                # if the extensions is found, then update it
+                if ext_from_db:
+                    for ext in updated_exts_list:
+                        if ext['name'] == ext_from_db['name']:
+                            ext['version'] = ext_from_db['version']
+                            ext['options'] = ext_from_db['options']
+                            break
+
+                count += 1
+                print_msg(f"\r\tExtensions updated: {count}/{total}", prefix=False, newline=False, log=_log)
+
+                # remove the future from the list
+                futures.remove(future)
+
+    print_msg("\n\tUpdating Summary Output:", prefix=False, log=_log)
+
+    for i in range(total):
+        original_ext = exts_list[i]
+        ext = updated_exts_list[i]
+
+        if not ext['version'] and not ext['options']:
             print_msg(
-                f"{ext:<{PKG_NAME_OFFSET}} v{('---'):<{PKG_VERSION_OFFSET}} {'letf as is':<{INFO_OFFSET}}", log=_log)
+                f"\t\t{ext:<{PKG_NAME_OFFSET}} v{('---'):<{PKG_VERSION_OFFSET}} {'letf as is':<{INFO_OFFSET}}", prefix=False, log=_log)
 
-            continue
-
-        elif isinstance(ext, tuple):
-            # get the values of the exts_list extension
-            ext_name, ext_version, ext_options = _get_extension_values(ext)
-
-        else:
-            raise EasyBuildError("Invalid extension format")
-
-        # get metadata of the latest version of the extension
-        metadata = _get_pkg_metadata(pkg_class=exts_defaultclass,
-                                     pkg_name=ext_name,
-                                     pkg_version=None,
-                                     bioc_version=bioconductor_version)
-
-        if metadata:
-            # process the metadata and format it as an extension
-            updated_ext = _format_metadata_as_extension(exts_defaultclass, metadata, bioconductor_version)
-
-            # print message to the user
-            if ext_version == updated_ext['version']:
-                print_msg(
-                    f"{ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} {'up-to-date':<{INFO_OFFSET}}", log=_log)
-            else:
-                print_msg(
-                    f"{ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} updated to v{updated_ext['version']:<{INFO_OFFSET}}", log=_log)
-
-        else:
-            # no metadata found, therefore store the original extension
-            updated_ext = {"name": ext_name, "version": ext_version,  "options": ext_options}
-
-            # print message to the user
+        elif original_ext[1] == ext['version']:
             print_msg(
-                f"{ext_name:<{PKG_NAME_OFFSET}} v{('_' if ext_version is None else ext_version):<{PKG_VERSION_OFFSET}} {'info not found':<{INFO_OFFSET}}", log=_log)
-
-        # store the updated extension
-        updated_exts_list.append(updated_ext)
-
-    # aesthetic terminal print
-    print()
+                f"\t\t{ext['name']:<{PKG_NAME_OFFSET}} v{(ext['version'] or '_'):<{PKG_VERSION_OFFSET}} {'up-to-date':<{INFO_OFFSET}}", prefix=False, log=_log)
+        else:
+            print_msg(
+                f"\t\t{ext['name']:<{PKG_NAME_OFFSET}} v{(original_ext[1] or '_'):<{PKG_VERSION_OFFSET}} updated to v{(ext['version'] or '_'):<{INFO_OFFSET}}", prefix=False, log=_log)
 
     return updated_exts_list
 
@@ -1238,24 +1286,25 @@ def update_exts_list(ecs):
     for ec in ecs:
 
         # welcome message
-        print_msg("\nUPDATING EASYCONFIG", prefix=False, log=_log)
-
-        print_msg("Easyconfig: %s" % ec['spec'], log=_log)
+        print_msg("\nUPDATING EASYCONFIG EXTENSIONS", prefix=False, log=_log)
 
         # get the extension list
-        print_msg("Getting extension list...", log=_log)
+        print_msg("Getting extension list: ", newline=False, log=_log)
         exts_list = _get_exts_list(ec)
+        print_msg(f"{len(exts_list)} extensions found", prefix=False, log=_log)
 
         # get the extension's list class
-        print_msg("Getting extension's list class...", log=_log)
+        print_msg("Getting extension's class: ", newline=False, log=_log)
         exts_defaultclass = _get_exts_list_class(ec)
+        print_msg(f"{exts_defaultclass}", prefix=False, log=_log)
 
         # get the Bioconductor version
-        print_msg("Getting Bioconductor version (if any)...", log=_log)
+        print_msg("Getting Bioconductor version: ", newline=False, log=_log)
         bioconductor_version = _get_bioconductor_version(ec)
+        print_msg(f"{'local_biocver not set. Bioconductor packages will not be considered' if not bioconductor_version else bioconductor_version}", prefix=False, log=_log)
 
         # get a new exts_list with all extensions to their latest version.
-        print_msg("Updating extension list...", log=_log)
+        print_msg("Updating extensions...", log=_log)
         updated_exts_list = _get_updated_exts_list(exts_list, exts_defaultclass, bioconductor_version)
 
         # get new easyconfig file with the updated extensions list
