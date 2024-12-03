@@ -627,38 +627,6 @@ def _print_extension(extension):
     print_msg(
         f"\t{name:<{PKG_NAME_OFFSET}} v{version:<{PKG_VERSION_OFFSET}} checksum: {checksum:<{CHECKSUM_OFFSET}}", prefix=False, log=_log)
 
-
-def _fulfill_parallel(pkg_class, ext, bioconductor_version=None):
-    """
-    Get name, version, and checksums from the database of the given extension.
-    
-    :param pkg_class: package class (RPackage, PythonPackage)
-    :param ext: extension to fulfill
-    :param bioconductor_version: bioconductor version to use (if any)
-
-    :return: extension fulfilled with the database values
-    """
-
-    if not pkg_class:
-        raise EasyBuildError("No package class provided to fulfill the extension")
-    
-    if not ext:
-        raise EasyBuildError("No extension provided to fulfill")
-
-    # get the values of the extension
-    ext_name, ext_version, _ = _get_extension_values(ext)
-
-    # get metadata of the extension
-    metadata = _get_pkg_metadata(pkg_class=pkg_class,
-                                 pkg_name=ext_name,
-                                 pkg_version=ext_version,
-                                 bioc_version=bioconductor_version)
-
-    # process the metadata and format it as an extension
-    if metadata:
-        ext = _format_metadata_as_extension(pkg_class, metadata, bioconductor_version)
-
-    return ext
     
 def _fulfill_exts_list(pkg_class, exts_list, exts_list_to_fulfill, bioconductor_version=None):
     """
@@ -684,21 +652,22 @@ def _fulfill_exts_list(pkg_class, exts_list, exts_list_to_fulfill, bioconductor_
     print_msg("Fulfilling exts_list...", log=_log)
 
     # prepare the list of extensions to be fulfilled formatting them as extensions.
-    # respect the extensions order and the original extensions names and versions
+    # respect the extensions order and the original extensions values
     for ext in exts_list_to_fulfill:
         # get the values of the extension
-        ext_name, ext_version, _ = _get_extension_values(ext)
+        ext_name, ext_version, ext_options = _get_extension_values(ext)
 
         # check if the extension is in the original list
         for orig_ext in exts_list:
-            orig_ext_name, orig_ext_version, _ = _get_extension_values(orig_ext)
+            orig_ext_name, orig_ext_version, orig_ext_options = _get_extension_values(orig_ext)
             if orig_ext_name.lower() == ext_name.lower():
                 ext_name = orig_ext_name
                 ext_version = orig_ext_version
+                ext_options = orig_ext_options
                 break
 
         # append the extension to the list of fulfilled extensions
-        fulfilled_exts_list.append({"name": ext_name, "version": ext_version,  "options": {}})
+        fulfilled_exts_list.append({"name": ext_name, "version": ext_version,  "options": ext_options})
 
     # set the max number of parallel workers
     max_workers = build_option('parallel') or min(16, os.cpu_count())
@@ -713,20 +682,22 @@ def _fulfill_exts_list(pkg_class, exts_list, exts_list_to_fulfill, bioconductor_
 
         # submit all the extensions to be fulfilled at once
         for ext in fulfilled_exts_list:
-            futures.append(executor.submit(_fulfill_parallel, pkg_class, ext, bioconductor_version))
+            futures.append(executor.submit(_get_ext_from_db, pkg_class, ext, bioconductor_version))
 
         # wait for the futures to be completed
         while futures:  
             for future in as_completed(futures):
-                # get the fulfilled extension
-                ext_fulfilled = future.result()
+                # get the extension from db
+                ext_from_db = future.result()
 
-                # update the extension in the fulfilled list
-                for ext in fulfilled_exts_list:
-                    if ext['name'] == ext_fulfilled['name']:
-                        ext['version'] = ext_fulfilled['version']
-                        ext['options'] = ext_fulfilled['options']
-                        break
+                if ext_from_db:
+                    # update the extension in the fulfilled list
+                    for ext in fulfilled_exts_list:
+                        if ext['name'].lower() == ext_from_db['name'].lower():
+                            ext['name'] = ext_from_db['name']
+                            ext['version'] = ext_from_db['version']
+                            ext['options'] = ext_from_db['options']
+                            break
 
                 exts_processed += 1
                 print_msg(f"\r\tExtensions fulfilled: {exts_processed}/{exts_total}", prefix=False, newline=False, log=_log)
