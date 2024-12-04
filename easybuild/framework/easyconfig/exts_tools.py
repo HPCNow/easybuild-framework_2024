@@ -1163,6 +1163,8 @@ def _get_deps_and_exts(ec_name):
     # search for the corresponding EasyConfig file
     easyconfigs = search_easyconfigs(ec_name, print_result=False)
 
+    # TODO: Change this so it takes the exactly filename using os basepath functionality
+
     # if easyconfig files were found, then process them
     if not easyconfigs:
         print_warning("No EasyConfig file found for dependency %s", ec_name)
