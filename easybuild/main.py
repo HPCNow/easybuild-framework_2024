@@ -55,6 +55,7 @@ from easybuild.framework.easyconfig import easyconfig
 from easybuild.framework.easystack import parse_easystack
 from easybuild.framework.easyconfig.easyconfig import clean_up_easyconfigs
 from easybuild.framework.easyconfig.easyconfig import fix_deprecated_easyconfigs, verify_easyconfig_filename
+from easybuild.framework.easyconfig.exts_tools import complete_exts_list, update_exts_list, check_exts_list
 from easybuild.framework.easyconfig.style import cmdline_easyconfigs_style_check
 from easybuild.framework.easyconfig.tools import categorize_files_by_type, dep_graph, det_copy_ec_specs
 from easybuild.framework.easyconfig.tools import det_easyconfig_paths, dump_env_script, get_paths_for
@@ -344,7 +345,7 @@ def process_eb_args(eb_args, eb_go, cfg_settings, modtool, testing, init_session
         'sync_pr_with_develop',
         'update_branch_github',
         'update_pr',
-        ) if getattr(options, opt)
+    ) if getattr(options, opt)
     ]
     any_pr_option_set = len(set_pr_options) > 0
     if len(set_pr_options) > 1:
@@ -549,6 +550,21 @@ def process_eb_args(eb_args, eb_go, cfg_settings, modtool, testing, init_session
     if options.dep_graph:
         _log.info("Creating dependency graph %s" % options.dep_graph)
         dep_graph(options.dep_graph, ordered_ecs)
+        return True
+
+    # complete exts_list extensions list and exit
+    elif options.complete_exts_list:
+        complete_exts_list(ordered_ecs)
+        return True
+    
+    # update all extensions in exts_list to the latest version and exit
+    if options.update_exts_list:
+        update_exts_list(ordered_ecs)
+        return True
+
+    # check the extensions already being installed by dependencies and exit
+    if options.check_exts_list:
+        check_exts_list(ordered_ecs)
         return True
 
     # submit build as job(s), clean up and exit
