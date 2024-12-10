@@ -33,23 +33,23 @@ Authors:
 
 import requests
 
+from easybuild.framework.extension import Extension
 from easybuild.tools.build_log import EasyBuildError, print_warning
 from .base_extension import BaseExtension
 
 CRANDB_URL = "https://crandb.r-pkg.org"
-CRANDB_CONTRIB_URL = "https://cran.r-project.org/src/contrib"
 
 
-class RPackage(BaseExtension):
+class RExtension(BaseExtension):
 
-    def __init__(self, ext):
+    def __init__(self, ext: Extension):
         """
         Initialize the R package extension.
 
         :param ext: the R package extension
         """
 
-        super(RPackage, self).__init__(ext)
+        super(RExtension, self).__init__(ext)
 
     def _get_metadata(self, version=None):
         """
@@ -66,7 +66,7 @@ class RPackage(BaseExtension):
         # build the url to get the package's metadata
         url = f"{CRANDB_URL}/{self.name}"
         if version:
-            url = f"{url}/{version}"
+            url = f"{CRANDB_URL}/{version}"
 
         # get the package's metadata from the database
         try:
@@ -89,7 +89,7 @@ class RPackage(BaseExtension):
         """
 
         if not metadata:
-            raise EasyBuildError("No package metadata provided to parse")
+            raise EasyBuildError("No metadata provided to parse")
 
         name = metadata.get('Package')
         version = metadata.get('Version')
@@ -97,21 +97,27 @@ class RPackage(BaseExtension):
 
         return (name, version, checksum)
 
-    def update(self):
+    def get_update(self):
         """
-        Update the R package extension.
+        Get the latest name, version and checksum of the R extension
 
-        :return: the updated R package extension
+        :return: the name, version and checksum of the latest version of the R extension
         """
 
+        # init variables
+        name, version, checksum = None, None, None
+
+        # get the metadata for the R package
         metadata = self._get_metadata()
-        name, version, checksum = self._parse_metadata(metadata)
 
-        self.name = name or self.name
-        self.version = version or self.version
-        if checksum:
-            if self.options is None:
-                self.options = {}
-            self.options['checksums'] = checksum
+        # parse the metadata for the R package
+        if metadata:
+            name, version, checksum = self._parse_metadata(metadata)
 
-        return (self.name, self.version, self.options)
+            # TODO: Download the package and calculate the checksum
+            if not checksum:
+                pass
+        else:
+            print_warning(f"No metadata found for extension {self.name}")
+
+        return name, version, checksum

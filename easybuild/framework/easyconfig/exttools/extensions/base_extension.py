@@ -31,38 +31,33 @@ Authors:
 * Danilo Gonzalez (Do IT Now)
 """
 
-from easybuild.tools.build_log import EasyBuildError
+from easybuild.framework.extension import Extension
 
 
 class BaseExtension:
-    def __init__(self, ext):
-        self.name, self.version, self.options = self._get_ext_values(ext)
+    """
+    Base extension class for EasyBuild EasyConfig extension tools.
+    """
 
-    def _get_ext_values(self, ext):
+    def __init__(self, ext: Extension):
+        self.ext = ext
+
+    @property
+    def name(self):
         """
-        Extract the name, version, and options from an extension.
-
-        :param ext: extension instance
+        Get the name of the package extension.
         """
+        return self.ext.name
 
-        if isinstance(ext, str):
-            return ext, None, None
-        elif isinstance(ext, (tuple, list)):
-            if len(ext) == 1:
-                return ext[0], None, None
-            elif len(ext) == 2:
-                return ext[0], ext[1], None
-            elif len(ext) == 3:
-                return ext[0], ext[1], ext[2]
-            else:
-                raise EasyBuildError("Invalid number of elements in extension tuple or list")
-        elif isinstance(ext, dict):
-            return (ext.get('name'), ext.get('version'), ext.get('options'))
-        else:
-            raise EasyBuildError("Invalid extension format")
-
-    def update(self):
+    @property
+    def version(self):
         """
-        Update the package extension.
+        Get the version of the package extension.
+        """
+        return self.ext.version
+
+    def get_update(self):
+        """
+        Get the latest name, version and checksum of the extension
         """
         raise NotImplementedError("Subclasses should implement this!")
